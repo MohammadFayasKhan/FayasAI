@@ -17,20 +17,21 @@
  *       sketch actually compiles when opened.
  */
 
-#include "config.h"
-#include "utils.h"
-#include "fayaswifi.h"
-#include "display.h"
+#include "ai.h"
 #include "animations.h"
 #include "audio.h"
-#include "ai.h"
+#include "config.h"
+#include "display.h"
+#include "fayaswifi.h"
+#include "utils.h"
 #include <esp_system.h>
 
 // ============================================================================
 // Global application state
 // ============================================================================
 static AppState g_state = AppState::BOOT;
-static DebouncedButton g_button(BUTTON_PIN, BUTTON_ACTIVE_LOW, BUTTON_DEBOUNCE_MS);
+static DebouncedButton g_button(BUTTON_PIN, BUTTON_ACTIVE_LOW,
+                                BUTTON_DEBOUNCE_MS);
 static NonBlockingTimer g_frameTimer(FRAME_INTERVAL_MS);
 static bool g_debugMode = DEBUG_MODE_DEFAULT;
 
@@ -48,84 +49,106 @@ static const char *g_lastErrorMessage = "Unknown Error";
 
 /// Helper to get a human-readable name for each state (for Serial logging).
 static const char *stateName(AppState s) {
-    switch (s) {
-        case AppState::BOOT:        return "BOOT";
-        case AppState::HOME:        return "HOME";
-        case AppState::LISTENING:   return "LISTENING";
-        case AppState::THINKING:    return "THINKING";
-        case AppState::RESPONSE:    return "RESPONSE";
-        case AppState::SUCCESS:     return "SUCCESS";
-        case AppState::ERROR_STATE: return "ERROR";
-        default:                    return "UNKNOWN";
-    }
+  switch (s) {
+  case AppState::BOOT:
+    return "BOOT";
+  case AppState::HOME:
+    return "HOME";
+  case AppState::LISTENING:
+    return "LISTENING";
+  case AppState::THINKING:
+    return "THINKING";
+  case AppState::RESPONSE:
+    return "RESPONSE";
+  case AppState::SUCCESS:
+    return "SUCCESS";
+  case AppState::ERROR_STATE:
+    return "ERROR";
+  case AppState::CONFIG_PORTAL:
+    return "CONFIG_PORTAL";
+  default:
+    return "UNKNOWN";
+  }
 }
 
 /// Central place to change state, so every transition also resets the
 /// relevant animation state via FayasAnimations::onEnterState().
 static void transitionTo(AppState newState) {
-    Serial.printf("[State] %s -> %s\n", stateName(g_state), stateName(newState));
-    g_state = newState;
-    FayasAnimations::onEnterState(newState);
+  Serial.printf("[State] %s -> %s\n", stateName(g_state), stateName(newState));
+  g_state = newState;
+  FayasAnimations::onEnterState(newState);
 }
 
 // ----------------------------------------------------------------------------
 // setup()
 // ----------------------------------------------------------------------------
 void setup() {
-    Serial.begin(SERIAL_BAUD_RATE);
-    delay(200); // Brief pause for USB-serial enumeration only; not on the hot path.
+  Serial.begin(SERIAL_BAUD_RATE);
+  delay(
+      200); // Brief pause for USB-serial enumeration only; not on the hot path.
 
-    Serial.println(F("\n========================================"));
-    Serial.println(F("  Fayas AI - Pocket AI Assistant"));
-    Serial.println(F("========================================"));
-    Serial.printf("[Boot] Free heap: %d bytes\n", ESP.getFreeHeap());
+  FayasWiFi::initCredentials();
 
-    // Print reset reason to diagnose crashes/restarts
-    esp_reset_reason_t rstReason = esp_reset_reason();
-    Serial.printf("[Boot] Reset Reason Code: %d (%s)\n", rstReason,
-                  (rstReason == ESP_RST_BROWNOUT) ? "BROWNOUT RESET - Check USB cable or supply!" :
-                  (rstReason == ESP_RST_PANIC) ? "SOFTWARE PANIC/CRASH!" :
-                  (rstReason == ESP_RST_INT_WDT || rstReason == ESP_RST_TASK_WDT) ? "WATCHDOG RESET!" : "Normal Boot/Reset");
+  Serial.println(F("\n========================================"));
+  Serial.println(F("  Fayas AI - Pocket AI Assistant"));
+  Serial.println(F("========================================"));
+  Serial.printf("[Boot] Free heap: %d bytes\n", ESP.getFreeHeap());
 
-    // --- OLED ---
-    Serial.println(F("[Boot] Initializing OLED display..."));
-    if (!FayasDisplay::begin()) {
-        Serial.println(F("[Boot] FATAL: OLED not detected! Check SDA=GPIO21, SCL=GPIO22, I2C addr=0x3C"));
-        while (true) { delay(1000); }
+  // Print reset reason to diagnose crashes/restarts
+  esp_reset_reason_t rstReason = esp_reset_reason();
+  Serial.printf(
+      "[Boot] Reset Reason Code: %d (%s)\n", rstReason,
+      (rstReason == ESP_RST_BROWNOUT)
+          ? "BROWNOUT RESET - Check USB cable or supply!"
+      : (rstReason == ESP_RST_PANIC) ? "SOFTWARE PANIC/CRASH!"
+      : (rstReason == ESP_RST_INT_WDT || rstReason == ESP_RST_TASK_WDT)
+          ? "WATCHDOG RESET!"
+          : "Normal Boot/Reset");
+
+  // --- OLED ---
+  Serial.println(F("[Boot] Initializing OLED display..."));
+  if (!FayasDisplay::begin()) {
+    Serial.println(F("[Boot] FATAL: OLED not detected! Check SDA=GPIO21, "
+                     "SCL=GPIO22, I2C addr=0x3C"));
+    while (true) {
+      delay(1000);
     }
-    Serial.println(F("[Boot] OLED: OK"));
+  }
+  Serial.println(F("[Boot] OLED: OK"));
 
-    // --- Animations & Button ---
-    FayasAnimations::begin();
-    g_button.begin();
-    Serial.printf("[Boot] Button on GPIO %d (active-%s), debounce=%lums\n",
-                  BUTTON_PIN, BUTTON_ACTIVE_LOW ? "LOW" : "HIGH", BUTTON_DEBOUNCE_MS);
+  // --- Animations & Button ---
+  FayasAnimations::begin();
+  g_button.begin();
+  Serial.printf("[Boot] Button on GPIO %d (active-%s), debounce=%lums\n",
+                BUTTON_PIN, BUTTON_ACTIVE_LOW ? "LOW" : "HIGH",
+                BUTTON_DEBOUNCE_MS);
 
-    // --- Audio / I2S ---
-    Serial.println(F("[Boot] Initializing I2S microphone..."));
-    if (!FayasAudio::begin()) {
-        Serial.println(F("[Boot] FAILED: Audio init failed (I2S or memory). Check INMP441 wiring."));
-        g_lastErrorMessage = "Mic Init Failed\nCheck Wiring";
-        transitionTo(AppState::ERROR_STATE);
-        return;
-    }
-    Serial.println(F("[Boot] Audio: OK"));
-    Serial.printf("[Boot] Free heap after audio: %d bytes\n", ESP.getFreeHeap());
+  // --- Audio / I2S ---
+  Serial.println(F("[Boot] Initializing I2S microphone..."));
+  if (!FayasAudio::begin()) {
+    Serial.println(F("[Boot] FAILED: Audio init failed (I2S or memory). Check "
+                     "INMP441 wiring."));
+    g_lastErrorMessage = "Mic Init Failed\nCheck Wiring";
+    transitionTo(AppState::ERROR_STATE);
+    return;
+  }
+  Serial.println(F("[Boot] Audio: OK"));
+  Serial.printf("[Boot] Free heap after audio: %d bytes\n", ESP.getFreeHeap());
 
-    // --- WiFi ---
-    Serial.printf("[Boot] Connecting to WiFi: %s ...\n", WIFI_SSID);
-    if (!FayasWiFi::connect()) {
-        Serial.println(F("[Boot] FAILED: WiFi connect timed out."));
-        g_lastErrorMessage = "WiFi Lost\nReconnect...";
-        transitionTo(AppState::ERROR_STATE);
-        return;
-    }
-    Serial.printf("[Boot] WiFi: OK  IP=%s  RSSI=%lddBm\n",
-                  FayasWiFi::getLocalIP().c_str(), FayasWiFi::getRSSI());
+  // --- WiFi ---
+  Serial.printf("[Boot] Connecting to WiFi: %s ...\n", FayasWiFi::getSSID().c_str());
+  if (!FayasWiFi::connect()) {
+    Serial.println(F("[Boot] FAILED: WiFi connect timed out. Launching Config AP FayasAI..."));
+    FayasWiFi::startConfigPortal("Wi-Fi connection timed out. Please update credentials below.");
+    transitionTo(AppState::CONFIG_PORTAL);
+    return;
+  }
+  Serial.printf("[Boot] WiFi: OK  IP=%s  RSSI=%lddBm\n",
+                FayasWiFi::getLocalIP().c_str(), FayasWiFi::getRSSI());
 
-    Serial.println(F("[Boot] All systems ready. Starting boot animation."));
-    Serial.println(F("========================================\n"));
-    transitionTo(AppState::BOOT);
+  Serial.println(F("[Boot] All systems ready. Starting boot animation."));
+  Serial.println(F("========================================\n"));
+  transitionTo(AppState::BOOT);
 }
 
 // ----------------------------------------------------------------------------
@@ -133,64 +156,67 @@ void setup() {
 // ----------------------------------------------------------------------------
 
 static void updateWifiCache() {
-    if (g_wifiPollTimer.ready()) {
-        g_wifiConnectedCache = FayasWiFi::isConnected();
-        g_signalBarsCache = rssiToBars(FayasWiFi::getRSSI());
-    }
+  if (g_wifiPollTimer.ready()) {
+    g_wifiConnectedCache = FayasWiFi::isConnected();
+    g_signalBarsCache = rssiToBars(FayasWiFi::getRSSI());
+  }
 }
 
 static void handleBoot() {
-    if (FayasAnimations::renderBoot()) {
-        Serial.println(F("[Home] Boot animation complete. Waiting for button press..."));
-        transitionTo(AppState::HOME);
-    }
+  if (FayasAnimations::renderBoot()) {
+    Serial.println(
+        F("[Home] Boot animation complete. Waiting for button press..."));
+    transitionTo(AppState::HOME);
+  }
 }
 
 static void handleHome() {
-    FayasAnimations::renderHome(g_wifiConnectedCache, g_signalBarsCache, g_debugMode);
+  FayasAnimations::renderHome(g_wifiConnectedCache, g_signalBarsCache,
+                              g_debugMode);
 
-    if (g_button.wasPressed()) {
-        Serial.println(F("[Home] >>> BUTTON PRESSED <<<"));
-        if (!g_wifiConnectedCache) {
-            Serial.println(F("[Home] WiFi not connected! Showing error."));
-            g_lastErrorMessage = "WiFi Lost\nReconnect...";
-            transitionTo(AppState::ERROR_STATE);
-            return;
-        }
-        Serial.println(F("[Listen] Starting recording..."));
-        FayasAudio::startRecording();
-        transitionTo(AppState::LISTENING);
+  if (g_button.wasPressed()) {
+    Serial.println(F("[Home] >>> BUTTON PRESSED <<<"));
+    if (!g_wifiConnectedCache) {
+      Serial.println(F("[Home] WiFi not connected! Showing error."));
+      g_lastErrorMessage = "WiFi Lost\nReconnect...";
+      transitionTo(AppState::ERROR_STATE);
+      return;
     }
+    Serial.println(F("[Listen] Starting recording..."));
+    FayasAudio::startRecording();
+    transitionTo(AppState::LISTENING);
+  }
 }
 
 static void handleListening() {
-    // Pump the I2S DMA buffer into RAM every loop iteration so recording
-    // never stalls waiting for a big blocking read, keeping this screen's
-    // animation smooth for the whole press-and-hold duration.
-    bool bufferFull = FayasAudio::pump();
-    unsigned long elapsed = FayasAudio::getElapsedMs();
+  // Pump the I2S DMA buffer into RAM every loop iteration so recording
+  // never stalls waiting for a big blocking read, keeping this screen's
+  // animation smooth for the whole press-and-hold duration.
+  bool bufferFull = FayasAudio::pump();
+  unsigned long elapsed = FayasAudio::getElapsedMs();
 
-    FayasAnimations::renderListening(elapsed);
+  FayasAnimations::renderListening(elapsed);
 
-    if (g_button.wasReleased() || bufferFull) {
-        FayasAudio::stopRecording();
-        size_t recordedBytes = FayasAudio::getRecordedByteCount();
+  if (g_button.wasReleased() || bufferFull) {
+    FayasAudio::stopRecording();
+    size_t recordedBytes = FayasAudio::getRecordedByteCount();
 
-        if (bufferFull) {
-            Serial.println(F("[Listen] Buffer full (max recording reached)"));
-        } else {
-            Serial.println(F("[Listen] >>> BUTTON RELEASED <<<"));
-        }
-        Serial.printf("[Listen] Recorded %u bytes (%.1f KB)\n",
-                      recordedBytes, recordedBytes / 1024.0f);
-
-        if (recordedBytes == 0) {
-            Serial.println(F("[Listen] No audio captured (tap too short). Returning home."));
-            transitionTo(AppState::HOME);
-            return;
-        }
-        transitionTo(AppState::THINKING);
+    if (bufferFull) {
+      Serial.println(F("[Listen] Buffer full (max recording reached)"));
+    } else {
+      Serial.println(F("[Listen] >>> BUTTON RELEASED <<<"));
     }
+    Serial.printf("[Listen] Recorded %u bytes (%.1f KB)\n", recordedBytes,
+                  recordedBytes / 1024.0f);
+
+    if (recordedBytes == 0) {
+      Serial.println(
+          F("[Listen] No audio captured (tap too short). Returning home."));
+      transitionTo(AppState::HOME);
+      return;
+    }
+    transitionTo(AppState::THINKING);
+  }
 }
 
 /**
@@ -203,137 +229,150 @@ static void handleListening() {
  *        rather than freezing on a single frame.
  */
 static void onAIProgress() {
-    if (g_frameTimer.ready()) {
-        FayasAnimations::renderThinking();
-    }
+  if (g_frameTimer.ready()) {
+    FayasAnimations::renderThinking();
+  }
 }
 
 static void handleThinking() {
-    // Render the first frame immediately so the Thinking animation
-    // appears the instant we enter this state, before any network I/O
-    // has started.
-    FayasAnimations::renderThinking();
+  // Render the first frame immediately so the Thinking animation
+  // appears the instant we enter this state, before any network I/O
+  // has started.
+  FayasAnimations::renderThinking();
 
-    size_t wavSize = 0;
-    const uint8_t *wavData = FayasAudio::finalizeWav(wavSize);
+  size_t wavSize = 0;
+  const uint8_t *wavData = FayasAudio::finalizeWav(wavSize);
 
-    if (wavData == nullptr) {
-        Serial.println(F("[Think] ERROR: finalizeWav returned null!"));
-        FayasAudio::releaseBuffer(); // Free the buffer to prevent memory leaks on rejection
-        g_lastErrorMessage = "No Audio\nTry Again";
-        transitionTo(AppState::ERROR_STATE);
-        return;
-    }
-    Serial.printf("[Think] WAV ready: %u bytes (%.1f KB). Sending to AI...\n",
-                  wavSize, wavSize / 1024.0f);
-    Serial.printf("[Think] Free heap before API call: %d bytes\n", ESP.getFreeHeap());
+  if (wavData == nullptr) {
+    Serial.println(F("[Think] ERROR: finalizeWav returned null!"));
+    FayasAudio::releaseBuffer(); // Free the buffer to prevent memory leaks on
+                                 // rejection
+    g_lastErrorMessage = "No Audio\nTry Again";
+    transitionTo(AppState::ERROR_STATE);
+    return;
+  }
+  Serial.printf("[Think] WAV ready: %u bytes (%.1f KB). Sending to AI...\n",
+                wavSize, wavSize / 1024.0f);
+  Serial.printf("[Think] Free heap before API call: %d bytes\n",
+                ESP.getFreeHeap());
 
-    String responseText;
-    unsigned long latencyMs = 0;
-    FayasAI::AIResult result = FayasAI::sendAudio(
-        wavData, wavSize, responseText, latencyMs, onAIProgress);
+  String responseText;
+  unsigned long latencyMs = 0;
+  FayasAI::AIResult result = FayasAI::sendAudio(wavData, wavSize, responseText,
+                                                latencyMs, onAIProgress);
 
-    // Reclaim audio memory immediately after the network call finishes
-    FayasAudio::releaseBuffer();
+  // Reclaim audio memory immediately after the network call finishes
+  FayasAudio::releaseBuffer();
 
-    g_lastLatencyMs = latencyMs;
-    Serial.printf("[Think] API call complete. Latency: %lums\n", latencyMs);
+  g_lastLatencyMs = latencyMs;
+  Serial.printf("[Think] API call complete. Latency: %lums\n", latencyMs);
 
-    if (result != FayasAI::AIResult::OK) {
-        Serial.printf("[Think] API ERROR: %s\n", FayasAI::resultToMessage(result));
-        g_lastErrorMessage = FayasAI::resultToMessage(result);
-        transitionTo(AppState::ERROR_STATE);
-        return;
-    }
+  if (result != FayasAI::AIResult::OK) {
+    Serial.printf("[Think] API ERROR: %s\n", FayasAI::resultToMessage(result));
+    g_lastErrorMessage = FayasAI::resultToMessage(result);
+    transitionTo(AppState::ERROR_STATE);
+    return;
+  }
 
-    Serial.println(F("[Think] SUCCESS! Response received:"));
-    Serial.println("--------------------");
-    Serial.println(responseText);
-    Serial.println("--------------------");
+  Serial.println(F("[Think] SUCCESS! Response received:"));
+  Serial.println("--------------------");
+  Serial.println(responseText);
+  Serial.println("--------------------");
 
-    g_lastResponseText = responseText;
-    transitionTo(AppState::RESPONSE);
+  g_lastResponseText = responseText;
+  transitionTo(AppState::RESPONSE);
 }
 
 static void handleResponse() {
-    FayasAnimations::renderResponse(g_lastResponseText, g_lastLatencyMs);
+  FayasAnimations::renderResponse(g_lastResponseText, g_lastLatencyMs);
 
-    if (g_button.wasPressed()) {
-        Serial.println(F("[Response] Button pressed. Transitioning to Success."));
-        transitionTo(AppState::SUCCESS);
-    }
+  if (g_button.wasPressed()) {
+    Serial.println(F("[Response] Button pressed. Transitioning to Success."));
+    transitionTo(AppState::SUCCESS);
+  }
 }
 
 static void handleError() {
-    FayasAnimations::renderError(g_lastErrorMessage);
+  FayasAnimations::renderError(g_lastErrorMessage);
 
-    // Allow a button press to retry: if WiFi is the underlying problem,
-    // attempt a reconnect; otherwise just return to Home so the user can
-    // try recording again.
-    if (g_button.wasPressed()) {
-        Serial.println(F("[Error] Button pressed on error screen. Retrying..."));
-        if (!g_wifiConnectedCache) {
-            Serial.println(F("[Error] Attempting WiFi reconnect..."));
-            FayasWiFi::reconnectIfNeeded();
-        }
-        transitionTo(AppState::HOME);
+  // Allow a button press to retry: if WiFi is the underlying problem,
+  // attempt a reconnect; otherwise just return to Home so the user can
+  // try recording again.
+  if (g_button.wasPressed()) {
+    Serial.println(F("[Error] Button pressed on error screen. Retrying..."));
+    if (!g_wifiConnectedCache) {
+      Serial.println(F("[Error] Attempting WiFi reconnect..."));
+      FayasWiFi::reconnectIfNeeded();
     }
+    transitionTo(AppState::HOME);
+  }
 }
 
 static void handleSuccess() {
-    if (FayasAnimations::renderSuccess()) {
-        transitionTo(AppState::HOME);
-    }
+  if (FayasAnimations::renderSuccess()) {
+    transitionTo(AppState::HOME);
+  }
 }
 
 // ----------------------------------------------------------------------------
 // loop()
 // ----------------------------------------------------------------------------
 void loop() {
-    g_button.update();
-    updateWifiCache();
+  g_button.update();
+  updateWifiCache();
 
-    // Background Wi-Fi watchdog: if we're sitting in the Error screen due
-    // to a WiFi drop, this will quietly bring us back once the network
-    // recovers (the user still sees the Error screen with a chance to
-    // retry manually in the meantime).
-    if (g_state != AppState::LISTENING && g_state != AppState::THINKING) {
-        FayasWiFi::reconnectIfNeeded();
+  // Background Wi-Fi watchdog: if we're sitting in the Error screen due
+  // to a WiFi drop, this will quietly bring us back once the network
+  // recovers (the user still sees the Error screen with a chance to
+  // retry manually in the meantime).
+  if (g_state != AppState::LISTENING && g_state != AppState::THINKING && g_state != AppState::CONFIG_PORTAL) {
+    FayasWiFi::reconnectIfNeeded();
+  }
+
+  // Cap the animation frame rate for consistent motion speed across
+  // screens; audio pumping in handleListening() still runs every loop
+  // iteration regardless of this cap, since it doesn't touch the display.
+  bool frameDue = g_frameTimer.ready();
+
+  switch (g_state) {
+  case AppState::BOOT:
+    if (frameDue)
+      handleBoot();
+    break;
+  case AppState::HOME:
+    if (frameDue)
+      handleHome();
+    break;
+  case AppState::LISTENING:
+    // Always pump audio; only throttle the *screen redraw* portion.
+    if (frameDue) {
+      handleListening();
+    } else {
+      FayasAudio::pump();
     }
-
-    // Cap the animation frame rate for consistent motion speed across
-    // screens; audio pumping in handleListening() still runs every loop
-    // iteration regardless of this cap, since it doesn't touch the display.
-    bool frameDue = g_frameTimer.ready();
-
-    switch (g_state) {
-        case AppState::BOOT:
-            if (frameDue) handleBoot();
-            break;
-        case AppState::HOME:
-            if (frameDue) handleHome();
-            break;
-        case AppState::LISTENING:
-            // Always pump audio; only throttle the *screen redraw* portion.
-            if (frameDue) {
-                handleListening();
-            } else {
-                FayasAudio::pump();
-            }
-            break;
-        case AppState::THINKING:
-            // handleThinking() performs a blocking network call internally;
-            // it manages its own single render call before blocking.
-            handleThinking();
-            break;
-        case AppState::RESPONSE:
-            if (frameDue) handleResponse();
-            break;
-        case AppState::SUCCESS:
-            if (frameDue) handleSuccess();
-            break;
-        case AppState::ERROR_STATE:
-            if (frameDue) handleError();
-            break;
+    break;
+  case AppState::THINKING:
+    // handleThinking() performs a blocking network call internally;
+    // it manages its own single render call before blocking.
+    handleThinking();
+    break;
+  case AppState::RESPONSE:
+    if (frameDue)
+      handleResponse();
+    break;
+  case AppState::SUCCESS:
+    if (frameDue)
+      handleSuccess();
+    break;
+  case AppState::ERROR_STATE:
+    if (frameDue)
+      handleError();
+    break;
+  case AppState::CONFIG_PORTAL:
+    FayasWiFi::handlePortal();
+    if (frameDue) {
+      FayasAnimations::renderConfigPortal("FayasAI", "fayasai.local");
     }
+    break;
+  }
 }

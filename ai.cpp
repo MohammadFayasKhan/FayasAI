@@ -10,6 +10,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "config.h"
+#include "fayaswifi.h"
 
 namespace FayasAI {
 
@@ -95,7 +96,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
         // Send HTTP Headers for Whisper
         client.println(F("POST /openai/v1/audio/transcriptions HTTP/1.1"));
         client.printf("Host: %s\r\n", AI_API_HOST);
-        client.printf("Authorization: Bearer %s\r\n", AI_API_KEY);
+        client.printf("Authorization: Bearer %s\r\n", FayasWiFi::getApiKey().c_str());
         client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
         client.printf("Content-Length: %d\r\n", whisperContentLength);
         client.println(F("Connection: close"));
@@ -251,7 +252,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
     // Send HTTP Headers for Chat
     client.println(F("POST /openai/v1/chat/completions HTTP/1.1"));
     client.printf("Host: %s\r\n", AI_API_HOST);
-    client.printf("Authorization: Bearer %s\r\n", AI_API_KEY);
+    client.printf("Authorization: Bearer %s\r\n", FayasWiFi::getApiKey().c_str());
     client.println(F("Content-Type: application/json"));
     client.printf("Content-Length: %d\r\n", chatJson.length());
     client.println(F("Connection: close")); // Close connection after response

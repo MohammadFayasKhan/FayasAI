@@ -71,6 +71,13 @@ void renderError(const char *message);
 /// @return true once the success animation has completed.
 bool renderSuccess();
 
+/**
+ * @brief Render one frame of the Wi-Fi fallback configuration portal status screen.
+ * @param apSsid   The SSID of the soft Access Point hosted by the device (e.g. "FayasAI").
+ * @param localIp  The local IP address of the server (e.g. "192.168.4.1").
+ */
+void renderConfigPortal(const String &apSsid, const String &localIp);
+
 } // namespace FayasAnimations
 
 #endif // ANIMATIONS_H

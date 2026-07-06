@@ -526,4 +526,39 @@ bool renderSuccess() {
     return elapsed >= SUCCESS_DURATION_MS;
 }
 
+void renderConfigPortal(const String &apSsid, const String &localIp) {
+    unsigned long elapsed = millis() - s_stateEnterMs;
+    oled.clearDisplay();
+
+    // 1. Draw dynamic expanding beacon ripples
+    int r1 = (elapsed / 25) % 18;
+    int r2 = ((elapsed / 25) + 9) % 18;
+    
+    // Draw the ripple rings
+    oled.drawCircle(64, 18, r1, SSD1306_WHITE);
+    oled.drawCircle(64, 18, r2, SSD1306_WHITE);
+    oled.fillCircle(64, 18, 2, SSD1306_WHITE); // beacon dot
+
+    // 2. Draw instructions text
+    oled.setTextSize(1);
+    oled.setTextColor(SSD1306_WHITE);
+    
+    String line1 = "Connect to Wi-Fi:";
+    int x1 = 64 - (line1.length() * 3);
+    oled.setCursor(max(0, x1), 38);
+    oled.print(line1);
+
+    String line2 = "SSID: " + apSsid;
+    int x2 = 64 - (line2.length() * 3);
+    oled.setCursor(max(0, x2), 48);
+    oled.print(line2);
+
+    String line3 = "http://fayasai.local";
+    int x3 = 64 - (line3.length() * 3);
+    oled.setCursor(max(0, x3), 57);
+    oled.print(line3);
+
+    oled.display();
+}
+
 } // namespace FayasAnimations

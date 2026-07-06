@@ -48,6 +48,33 @@ long getRSSI();
 /// Local IP address as a string, or "0.0.0.0" if not connected.
 String getLocalIP();
 
+/**
+ * @brief Initialize credentials from NVS (Preferences) or fall back to
+ *        compile-time defaults in config.h.
+ */
+void initCredentials();
+
+/// Get the active Wi-Fi SSID
+String getSSID();
+
+/// Get the active Wi-Fi Password
+String getPassword();
+
+/// Get the active Groq API Key
+String getApiKey();
+
+/**
+ * @brief Start the fallback Wi-Fi access point (FayasAI) and local config portal web server.
+ * @param errorMsg The error message (e.g. from connection timeout/failure) to display on the page.
+ */
+void startConfigPortal(const String& errorMsg);
+
+/**
+ * @brief Process pending clients on the configuration web server. Call inside the loop when
+ *        state == AppState::CONFIG_PORTAL.
+ */
+void handlePortal();
+
 } // namespace FayasWiFi
 
 #endif // FAYAS_WIFI_H

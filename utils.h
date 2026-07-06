@@ -27,7 +27,8 @@ enum class AppState : uint8_t {
     THINKING,    // Audio sent to AI, waiting for a response
     RESPONSE,    // Displaying the AI text response (typewriter + scroll)
     SUCCESS,     // Brief checkmark animation before returning home
-    ERROR_STATE  // Wi-Fi lost, API error, or other recoverable failure
+    ERROR_STATE, // Wi-Fi lost, API error, or other recoverable failure
+    CONFIG_PORTAL // Wi-Fi configuration access point portal
 };
 
 // ----------------------------------------------------------------------------
