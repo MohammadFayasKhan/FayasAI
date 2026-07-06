@@ -11,6 +11,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include "config.h"
+#include <lwip/dns.h>
 
 namespace FayasWiFi {
 
@@ -225,11 +226,15 @@ static void handleSave();
 
 void initCredentials() {
     Preferences prefs;
-    prefs.begin("fayasai", false); // Open in read-write mode to ensure namespace creation on first boot
-    s_ssid = prefs.getString("ssid", "");
-    s_password = prefs.getString("pass", "");
-    s_apiKey = prefs.getString("apikey", "");
-    prefs.end();
+    // Open in read-write mode. If it fails, s_ssid remains empty, falling back to defaults.
+    if (prefs.begin("fayasai", false)) {
+        s_ssid = prefs.getString("ssid", "");
+        s_password = prefs.getString("pass", "");
+        s_apiKey = prefs.getString("apikey", "");
+        prefs.end();
+    } else {
+        Serial.println(F("[WiFi] WARNING: Failed to open Preferences namespace 'fayasai'."));
+    }
 
     // Fall back to defaults in config.h if NVS is empty
     if (s_ssid.length() == 0) {
@@ -251,9 +256,9 @@ String getApiKey() { return s_apiKey; }
 bool connect() {
     Serial.printf("[WiFi] Initiating connection to SSID: '%s'...\n", s_ssid.c_str());
     
-    // Clear any previous configuration and disable flash persistence to prevent mode hangs
+    // Clear connection state and disable mode persistence
     WiFi.persistent(false);
-    WiFi.disconnect(true);
+    WiFi.disconnect();
     delay(100);
     
     WiFi.mode(WIFI_STA);
@@ -268,10 +273,15 @@ bool connect() {
         delay(100);
     }
 
-    // Set custom DNS after DHCP allocation has successfully resolved IP, subnet, and gateway
-    IPAddress dns1(8, 8, 8, 8);
-    IPAddress dns2(1, 1, 1, 1);
-    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+    // Set custom DNS using LwIP directly to prevent DHCP lease configuration overrides/crashes
+    ip_addr_t dns1_ip, dns2_ip;
+    dns1_ip.type = IPADDR_TYPE_V4;
+    dns1_ip.u_addr.ip4.addr = 0x08080808UL; // 8.8.8.8 in network byte order
+    dns_setserver(0, &dns1_ip);
+    
+    dns2_ip.type = IPADDR_TYPE_V4;
+    dns2_ip.u_addr.ip4.addr = 0x01010101UL; // 1.1.1.1 in network byte order
+    dns_setserver(1, &dns2_ip);
 
     Serial.printf("[WiFi] Connected! IP: %s, RSSI: %ld dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
