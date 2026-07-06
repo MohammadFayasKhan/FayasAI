@@ -85,8 +85,8 @@ graph TD
 Detailed modular documentation is provided alongside the source code:
 
 ```
-Fayas_AI/
-├── Fayas_AI.ino                 # Entry point + top-level state machine coordinator
+FayasAI/
+├── FayasAI.ino                 # Entry point + top-level state machine coordinator
 ├── config.h                     # Pinouts, credentials (SSID/Password/Groq Key), and thresholds
 ├── ai.h / ai.cpp                # Groq API scoped HTTPS clients (Whisper + Llama)
 ├── audio.h / audio.cpp          # I2S recording driver and WAV framing logic
@@ -143,7 +143,7 @@ Open [config.h](config.h) and set your local network credentials and Groq API Ke
 
 **3. Upload**
 
-- Open `Fayas_AI.ino` in the Arduino IDE.
+- Open `FayasAI.ino` in the Arduino IDE.
 - Select your board: `Tools → Board → ESP32 Arduino → ESP32 Dev Module`.
 - Select your partition scheme: `Tools → Partition Scheme → Huge APP (3MB No OTA / 1MB SPIFFS)`.
 - Select the serial COM port.
