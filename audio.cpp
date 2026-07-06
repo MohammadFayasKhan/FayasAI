@@ -165,11 +165,6 @@ void startRecording() {
     return;
   }
 
-  // Reset I2S peripheral and DMA descriptors by cycling the channel off and on.
-  // This clears any hardware FIFO overflows/errors that accumulated while idle.
-  i2s_channel_disable(s_rxHandle);
-  i2s_channel_enable(s_rxHandle);
-
   // Wait 100ms with BCLK running to give the INMP441 power supply and digital
   // filters ample time to boot up and output stable audio data.
   delay(100);

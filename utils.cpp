@@ -62,7 +62,7 @@ void DebouncedButton::begin() {
     // Use internal pull-up for bare active-low buttons (wire to GND).
     // For active-high touch switch modules (which drive their own output),
     // use plain INPUT so the pull-up doesn't interfere with the module.
-    pinMode(_pin, _activeLow ? INPUT_PULLUP : INPUT);
+    pinMode(_pin, _activeLow ? INPUT_PULLUP : INPUT_PULLDOWN);
     bool rawPressed = _activeLow ? (digitalRead(_pin) == LOW)
                                   : (digitalRead(_pin) == HIGH);
     _stableState = rawPressed;
