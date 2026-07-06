@@ -68,12 +68,10 @@ void begin() {
 
 void onEnterState(AppState newState) {
     s_stateEnterMs = millis();
-    if (newState == AppState::LISTENING) {
-        // Draw the static Listening layout ONCE on the OLED to display the UI,
-        // then completely freeze display updates during the recording.
-        // This removes 100% of I2C noise and CPU starvation.
-        renderListening(0);
-    }
+    // Per-screen state resets are handled lazily inside each render*()
+    // function by comparing against s_stateEnterMs where needed (see
+    // renderResponse's text-change detection for the one screen that
+    // needs additional reset logic beyond a timestamp).
 }
 
 static unsigned long dtMsSinceLastFrame() {
