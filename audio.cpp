@@ -97,7 +97,7 @@ bool begin() {
   i2s_std_config_t stdCfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(
           AUDIO_SAMPLE_RATE_HZ), // Set clock dynamically from config.h
-      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
@@ -191,10 +191,11 @@ void startRecording() {
 bool pump() {
   // Purpose: Non-blocking drain of the I2S DMA buffer into our recording
   //          buffer. Called every loop() iteration while recording.
-  // Logic: Since the I2S peripheral is configured for 16-bit data bit width
-  //        and 32-bit slot width, the hardware automatically sign-extends and
-  //        positions the 24-bit input into standard 16-bit signed integers.
-  //        We read 16-bit samples directly.
+  // Logic: Since the I2S peripheral is configured for 32-bit data bit width
+  //        and 32-bit slot width, the hardware remains perfectly synchronized
+  //        with the 64-bit I2S frame (32 bits per channel). We read 32-bit signed
+  //        integers, and right-shift them by 16 bits in software to get the clean
+  //        16-bit range data.
   if (!s_recording || s_buffer == nullptr) {
     return false;
   }
@@ -205,14 +206,14 @@ bool pump() {
     return true; // Buffer full - caller should stop recording.
   }
 
-  // We run I2S hardware in stereo mode at 16kHz.
-  // 1 frame contains 1 Left and 1 Right sample (each is 16-bit/2 bytes).
-  // So 1 frame = 4 bytes.
+  // We run I2S hardware in stereo mode at 12kHz.
+  // 1 frame contains 1 Left and 1 Right sample (each is 32-bit/4 bytes).
+  // So 1 frame = 8 bytes.
   // Since we write 1 mono sample (2 bytes) per I2S frame, the ratio of
-  // input-to-output bytes is 2 to 1.
-  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 2);
-  // Align to 4 bytes (one stereo frame: L0, R0)
-  bytesToRequest = (bytesToRequest / 4) * 4;
+  // input-to-output bytes is 4 to 1.
+  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 4);
+  // Align to 8 bytes (one stereo frame: L0, R0)
+  bytesToRequest = (bytesToRequest / 8) * 8;
 
   if (bytesToRequest == 0) {
     return false;
@@ -224,17 +225,21 @@ bool pump() {
                        0 /* timeout_ms = don't block */);
 
   if (result == ESP_OK && bytesRead > 0) {
-    size_t samplesRead = bytesRead / 2;
-    int16_t *samples16 = (int16_t *)s_readChunk;
+    size_t samplesRead = bytesRead / 4;
+    int32_t *samples32 = (int32_t *)s_readChunk;
 
     // Auto-detect the active channel (Left vs Right) on the first chunk of
-    // data. The floating channel will read all 1s (0xFFFF) or be constant.
+    // data. The floating channel will read all 1s (0xFFFFFFFF) or be constant.
     if (!s_channelDetected && samplesRead >= 8) {
       uint64_t leftDiff = 0;
       uint64_t rightDiff = 0;
       for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-        leftDiff += abs(samples16[i] - samples16[i + 2]);
-        rightDiff += abs(samples16[i + 1] - samples16[i + 3]);
+        int16_t l0 = samples32[i] >> 16;
+        int16_t l1 = samples32[i + 2] >> 16;
+        int16_t r0 = samples32[i + 1] >> 16;
+        int16_t r1 = samples32[i + 3] >> 16;
+        leftDiff += abs(l0 - l1);
+        rightDiff += abs(r0 - r1);
       }
       if (rightDiff > leftDiff + 100) {
         s_activeChannelIsLeft = false;
@@ -252,12 +257,12 @@ bool pump() {
 
     if (!s_printedHex && samplesRead >= 8) {
       Serial.println(
-          F("[Audio Debug] Raw 16-bit hex samples from I2S (Stereo pairs):"));
+          F("[Audio Debug] Raw 32-bit hex samples from I2S (Stereo pairs):"));
       for (int j = 0; j < 4; j++) {
-        Serial.printf("  Pair %d - Left: 0x%04X (signed: %d), Right: 0x%04X "
+        Serial.printf("  Pair %d - Left: 0x%08X (signed: %d), Right: 0x%08X "
                       "(signed: %d)\n",
-                      j, (uint16_t)samples16[j * 2], samples16[j * 2],
-                      (uint16_t)samples16[j * 2 + 1], samples16[j * 2 + 1]);
+                      j, samples32[j * 2], (int)(samples32[j * 2] >> 16),
+                      samples32[j * 2 + 1], (int)(samples32[j * 2 + 1] >> 16));
       }
       s_printedHex = true;
     }
@@ -272,7 +277,7 @@ bool pump() {
 #if AUDIO_SAMPLE_RATE_HZ == 8000
     const float R = 0.94f; // ~80Hz cutoff at 8kHz sample rate
 #else
-    const float R = 0.97f; // ~80Hz cutoff at 16kHz sample rate
+    const float R = 0.97f; // ~80Hz cutoff at 12kHz/16kHz sample rate
 #endif
     const float LIMITER_THRESHOLD = 24000.0f;
     const float LIMITER_KNEE = 8000.0f;
@@ -281,9 +286,9 @@ bool pump() {
     for (size_t i = 0; i + 1 < samplesRead; i += 2) {
       float raw;
       if (s_activeChannelIsLeft) {
-        raw = (float)samples16[i];
+        raw = (float)(samples32[i] >> 16);
       } else {
-        raw = (float)samples16[i + 1];
+        raw = (float)(samples32[i + 1] >> 16);
       }
 
       // DC blocking high-pass filter formula
