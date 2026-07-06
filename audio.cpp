@@ -38,8 +38,6 @@ static float s_lastRaw = 0.0f;
 static float s_lastFiltered = 0.0f;
 static bool s_printedHex = false;
 static bool s_discardNextChunk = false;
-static bool s_channelDetected = false;
-static bool s_activeChannelIsLeft = true;
 
 // Small scratch buffer used to pull samples out of the I2S DMA ring buffer
 // on each pump() call, sized to move a reasonable chunk without blocking
@@ -185,7 +183,6 @@ void startRecording() {
   s_lastFiltered = 0.0f;
   s_printedHex = false;
   s_discardNextChunk = false;
-  s_channelDetected = false; // Reset detection for the new recording
 }
 
 bool pump() {
@@ -228,33 +225,6 @@ bool pump() {
     size_t samplesRead = bytesRead / 4;
     int32_t *samples32 = (int32_t *)s_readChunk;
 
-    // Auto-detect the active channel (Left vs Right) on the first chunk of
-    // data. The floating channel will read all 1s (0xFFFFFFFF) or be constant.
-    if (!s_channelDetected && samplesRead >= 8) {
-      uint64_t leftDiff = 0;
-      uint64_t rightDiff = 0;
-      for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-        int16_t l0 = samples32[i] >> 16;
-        int16_t l1 = samples32[i + 2] >> 16;
-        int16_t r0 = samples32[i + 1] >> 16;
-        int16_t r1 = samples32[i + 3] >> 16;
-        leftDiff += abs(l0 - l1);
-        rightDiff += abs(r0 - r1);
-      }
-      if (rightDiff > leftDiff + 100) {
-        s_activeChannelIsLeft = false;
-        Serial.printf("[Audio] Auto-detected active channel: RIGHT "
-                      "(leftDiff=%llu, rightDiff=%llu)\n",
-                      leftDiff, rightDiff);
-      } else {
-        s_activeChannelIsLeft = true;
-        Serial.printf("[Audio] Auto-detected active channel: LEFT "
-                      "(leftDiff=%llu, rightDiff=%llu)\n",
-                      leftDiff, rightDiff);
-      }
-      s_channelDetected = true;
-    }
-
     if (!s_printedHex && samplesRead >= 8) {
       Serial.println(
           F("[Audio Debug] Raw 32-bit hex samples from I2S (Stereo pairs):"));
@@ -284,12 +254,8 @@ bool pump() {
 
     // Loop through the read samples in stereo frames (2 samples at a time: L0, R0)
     for (size_t i = 0; i + 1 < samplesRead; i += 2) {
-      float raw;
-      if (s_activeChannelIsLeft) {
-        raw = (float)(samples32[i] >> 16);
-      } else {
-        raw = (float)(samples32[i + 1] >> 16);
-      }
+      // INMP441 L/R pin is tied to GND, so it outputs on the LEFT channel (index i)
+      float raw = (float)(samples32[i] >> 16);
 
       // DC blocking high-pass filter formula
       float filtered = raw - s_lastRaw + R * s_lastFiltered;
