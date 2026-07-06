@@ -126,15 +126,22 @@ git clone https://github.com/MohammadFayasKhan/FayasAI.git
 cd FayasAI
 ```
 
-**2. Configure WiFi credentials**
+**2. Configure credentials in `config.h`**
 
-Open `config.h` and fill in your Wi-Fi credentials and Groq API Key directly in the definitions:
+Open [config.h](config.h) and set your local network credentials and Groq API Key on the following lines:
 
-```cpp
-#define WIFI_SSID       "YOUR_SSID"
-#define WIFI_PASSWORD   "YOUR_PASSWORD"
-#define AI_API_KEY      "YOUR_GROQ_API_KEY"
-```
+* **`WIFI_SSID` (Line 29):** The SSID (name) of your local Wi-Fi router. Note that the ESP32 only supports 2.4 GHz bands.
+  ```cpp
+  #define WIFI_SSID       "your_wifi_ssid_here"
+  ```
+* **`WIFI_PASSWORD` (Line 30):** The security password for your Wi-Fi router.
+  ```cpp
+  #define WIFI_PASSWORD   "your_wifi_password_here"
+  ```
+* **`AI_API_KEY` (Line 44):** Your Groq Console API authentication key. Get a free API key instantly at the [Groq Console](https://console.groq.com/keys).
+  ```cpp
+  #define AI_API_KEY      "gsk_your_groq_key_here"
+  ```
 
 **3. Upload**
 
