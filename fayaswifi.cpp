@@ -225,7 +225,7 @@ static void handleSave();
 
 void initCredentials() {
     Preferences prefs;
-    prefs.begin("fayasai", true); // Read-only
+    prefs.begin("fayasai", false); // Open in read-write mode to ensure namespace creation on first boot
     s_ssid = prefs.getString("ssid", "");
     s_password = prefs.getString("pass", "");
     s_apiKey = prefs.getString("apikey", "");
@@ -235,6 +235,9 @@ void initCredentials() {
     if (s_ssid.length() == 0) {
         s_ssid = WIFI_SSID;
         s_password = WIFI_PASSWORD;
+        Serial.println(F("[WiFi] No saved credentials found in NVS. Using defaults from config.h."));
+    } else {
+        Serial.printf("[WiFi] Loaded credentials from NVS. SSID: '%s'\n", s_ssid.c_str());
     }
     if (s_apiKey.length() == 0) {
         s_apiKey = AI_API_KEY;
@@ -246,17 +249,31 @@ String getPassword() { return s_password; }
 String getApiKey() { return s_apiKey; }
 
 bool connect() {
+    Serial.printf("[WiFi] Initiating connection to SSID: '%s'...\n", s_ssid.c_str());
+    
+    // Clear any previous configuration and disable flash persistence to prevent mode hangs
+    WiFi.persistent(false);
+    WiFi.disconnect(true);
+    delay(100);
+    
     WiFi.mode(WIFI_STA);
-    WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
     WiFi.begin(s_ssid.c_str(), s_password.c_str());
 
     unsigned long startMs = millis();
     while (WiFi.status() != WL_CONNECTED) {
         if ((millis() - startMs) >= WIFI_CONNECT_TIMEOUT_MS) {
+            Serial.println(F("[WiFi] Connection attempt timed out."));
             return false;
         }
         delay(100);
     }
+
+    // Set custom DNS after DHCP allocation has successfully resolved IP, subnet, and gateway
+    IPAddress dns1(8, 8, 8, 8);
+    IPAddress dns2(1, 1, 1, 1);
+    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+
+    Serial.printf("[WiFi] Connected! IP: %s, RSSI: %ld dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
     s_lastCheckMs = millis();
     return true;
@@ -276,11 +293,13 @@ bool reconnectIfNeeded() {
     if (WiFi.status() == WL_CONNECTED) {
         if (s_reconnecting) {
             s_reconnecting = false;
+            Serial.println(F("[WiFi] Reconnect succeeded! Status recovered."));
             return true;
         }
         return false;
     }
 
+    Serial.println(F("[WiFi] Watchdog: connection lost! Reconnecting in background..."));
     s_reconnecting = true;
     WiFi.disconnect();
     WiFi.begin(s_ssid.c_str(), s_password.c_str());
