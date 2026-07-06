@@ -1,0 +1,36 @@
+# Fayas AI Git Ignore Rules
+
+# Ignore environment variables file
+.env
+
+# Ignore generated credentials file containing sensitive information
+credentials.h
+
+# Arduino IDE & Build Artifacts
+build/
+libraries/
+*.hex
+*.elf
+*.bin
+*.d
+*.o
+
+# PlatformIO Build directories
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+.project
+.mxproject
+
+# VS Code & CLion Configs
+.vscode/
+.idea/
+cmake-build-*/
+CMakeListsPrivate.txt
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+Desktop.ini

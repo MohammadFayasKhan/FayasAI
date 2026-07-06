@@ -1,0 +1,68 @@
+/**
+ * @file    audio.h
+ * @project Fayas AI
+ * @author  Fayas
+ * @version 1.0.0
+ * @brief   INMP441 I2S microphone capture. Records 16kHz/16-bit mono PCM
+ *          directly into a RAM buffer (PSRAM if available) and wraps it in
+ *          a standard 44-byte WAV header, ready to hand to ai.cpp.
+ */
+
+#ifndef AUDIO_H
+#define AUDIO_H
+
+#include <Arduino.h>
+
+namespace FayasAudio {
+
+/**
+ * @brief Initialize the I2S peripheral for the INMP441 microphone and
+ *        allocate the recording buffer.
+ * @return true on success; false if buffer allocation failed (e.g. out
+ *         of memory) or the I2S driver could not be installed.
+ */
+bool begin();
+
+/**
+ * @brief Begin a new recording session. Resets the internal write cursor.
+ *        Call once when the user presses the push-to-talk button.
+ */
+void startRecording();
+
+/**
+ * @brief Pull any samples currently available from the I2S DMA buffers into
+ *        the recording buffer. Must be called frequently (every loop()
+ *        iteration) while recording is active so animations stay smooth
+ *        instead of blocking on a single long i2s_read() call.
+ * @return true if the buffer is now full (AUDIO_MAX_RECORD_SECONDS reached),
+ *         signalling the caller should stop recording automatically.
+ */
+bool pump();
+
+/**
+ * @brief Stop the current recording session. Call when the button is
+ *        released. Safe to call even if the buffer auto-filled already.
+ */
+void stopRecording();
+
+/// Elapsed recording time in milliseconds, for the on-screen timer.
+unsigned long getElapsedMs();
+
+/**
+ * @brief Finalize the recording into a playable WAV byte buffer by writing
+ *        the 44-byte canonical PCM header in front of the captured samples.
+ * @param outSize Receives the total size (header + PCM data) in bytes.
+ * @return Pointer to the internal WAV buffer (do not free; owned by this
+ *         module), or nullptr if no recording has been made yet.
+ */
+const uint8_t *finalizeWav(size_t &outSize);
+
+/// Free the audio recording buffer to reclaim memory for the network requests.
+void releaseBuffer();
+
+/// Number of raw PCM bytes captured in the most recent recording.
+size_t getRecordedByteCount();
+
+} // namespace FayasAudio
+
+#endif // AUDIO_H
