@@ -197,14 +197,14 @@ static void handleListening() {
 
   FayasAnimations::renderListening(elapsed);
 
-  if (g_button.wasPressed() || bufferFull) {
+  if ((g_button.wasPressed() && elapsed > 350) || bufferFull) {
     FayasAudio::stopRecording();
     size_t recordedBytes = FayasAudio::getRecordedByteCount();
 
     if (bufferFull) {
       Serial.println(F("[Listen] Buffer full (max recording reached)"));
     } else {
-      Serial.println(F("[Listen] >>> BUTTON PRESSED AGAIN (STOP) <<<"));
+      Serial.println(F("[Listen] >>> TOGGLE STOP PRESSED <<<"));
     }
     Serial.printf("[Listen] Recorded %u bytes (%.1f KB)\n", recordedBytes,
                   recordedBytes / 1024.0f);
