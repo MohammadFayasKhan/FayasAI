@@ -96,7 +96,7 @@ bool begin() {
   // or run in a mode that desynchronizes the microphone.
   i2s_std_config_t stdCfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(
-          16000), // Run hardware at 16kHz (minimum for INMP441)
+          AUDIO_SAMPLE_RATE_HZ), // Set clock dynamically from config.h
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
