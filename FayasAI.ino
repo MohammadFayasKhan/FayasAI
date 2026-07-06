@@ -129,8 +129,10 @@ void setup() {
     Serial.println(F("[Boot] FAILED: Audio init failed (I2S or memory). Check "
                      "INMP441 wiring."));
     g_lastErrorMessage = "Mic Init Failed\nCheck Wiring";
-    transitionTo(AppState::ERROR_STATE);
-    return;
+    while (true) {
+      FayasAnimations::renderError(g_lastErrorMessage);
+      delay(100);
+    }
   }
   Serial.println(F("[Boot] Audio: OK"));
   Serial.printf("[Boot] Free heap after audio: %d bytes\n", ESP.getFreeHeap());
@@ -190,8 +192,12 @@ static void handleHome() {
 
 static void handleListening() {
   // Pump the I2S DMA buffer into RAM every loop iteration so recording
-  // never stalls waiting for a big blocking read.
+  // never stalls waiting for a big blocking read, keeping this screen's
+  // animation smooth for the whole press-and-hold duration.
   bool bufferFull = FayasAudio::pump();
+  unsigned long elapsed = FayasAudio::getElapsedMs();
+
+  FayasAnimations::renderListening(elapsed);
 
   if (g_button.wasReleased() || bufferFull) {
     FayasAudio::stopRecording();
@@ -340,10 +346,12 @@ void loop() {
       handleHome();
     break;
   case AppState::LISTENING:
-    // Do NOT draw anything on the screen during recording to prevent
-    // I2C transfer latency from starving I2S and to eliminate OLED switching
-    // noise in the microphone circuit. We pump audio at maximum CPU speed.
-    handleListening();
+    // Always pump audio; only throttle the *screen redraw* portion.
+    if (frameDue) {
+      handleListening();
+    } else {
+      FayasAudio::pump();
+    }
     break;
   case AppState::THINKING:
     // handleThinking() performs a blocking network call internally;

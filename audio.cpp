@@ -38,6 +38,8 @@ static float s_lastRaw = 0.0f;
 static float s_lastFiltered = 0.0f;
 static bool s_printedHex = false;
 static bool s_discardNextChunk = false;
+static bool s_channelDetected = false;
+static bool s_activeChannelIsLeft = true;
 
 // Small scratch buffer used to pull samples out of the I2S DMA ring buffer
 // on each pump() call, sized to move a reasonable chunk without blocking
@@ -85,13 +87,14 @@ bool begin() {
   }
   Serial.println(F("[Audio] I2S channel created"));
 
-  // --- Step 2: Configure standard I2S mode for INMP441 ---
-  // Note: We configure the slot mode as STEREO and enable both slots
-  // (I2S_STD_SLOT_BOTH). This forces the ESP32 hardware to generate
-  // a standard 64-cycle bit clock per WS frame (32 bits per channel)
-  // which is required for the INMP441's internal circuitry to start.
-  // In mono mode, the ESP32 driver may optimize the clock to 32 cycles
-  // or run in a mode that desynchronizes the microphone.
+    // Free the buffer if we fail, though we'll likely halt anyway.
+    free(s_buffer);
+    s_buffer = nullptr;
+    return false;
+  }
+  Serial.println(F("[Audio] I2S RX channel allocated"));
+
+  // --- Step 3: Configure standard mode ---
   i2s_std_config_t stdCfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(
           AUDIO_SAMPLE_RATE_HZ), // Set clock dynamically from config.h
@@ -122,7 +125,7 @@ bool begin() {
   }
   Serial.println(F("[Audio] I2S mode configured"));
 
-  // --- Step 3: Enable the channel ---
+  // --- Step 4: Enable the channel ---
   if (i2s_channel_enable(s_rxHandle) != ESP_OK) {
     Serial.println(F("[Audio] i2s_channel_enable failed"));
     return false;
@@ -130,26 +133,6 @@ bool begin() {
   Serial.println(F("[Audio] I2S channel enabled"));
 
   Serial.println(F("[Audio] I2S microphone initialized successfully"));
-
-  // --- Step 4: Allocate the recording buffer ONCE, permanently ---
-  // This buffer used to be malloc'd fresh at the start of every recording
-  // and free'd after every send. On an ESP32 without PSRAM, that
-  // malloc/free churn - interleaved with the small, irregularly-sized
-  // allocations TLS and JSON parsing do during each Groq API call -
-  // fragments the ~320KB internal heap over time. Eventually no single
-  // *contiguous* block big enough for this buffer remains, even though
-  // total free memory looks fine, and every future recording fails.
-  // Reserving it once here, before any network activity has a chance to
-  // fragment the heap, avoids that failure mode entirely.
-  s_bufferCapacity = WAV_HEADER_SIZE_BYTES + AUDIO_MAX_BUFFER_BYTES;
-  s_buffer = allocateAudioBuffer(s_bufferCapacity);
-  if (s_buffer == nullptr) {
-    Serial.println(
-        F("[Audio] FATAL: could not allocate recording buffer at boot!"));
-    return false;
-  }
-  Serial.printf("[Audio] Allocated permanent recording buffer: %u bytes\n",
-                s_bufferCapacity);
 
   return true;
 }
@@ -183,6 +166,7 @@ void startRecording() {
   s_lastFiltered = 0.0f;
   s_printedHex = false;
   s_discardNextChunk = false;
+  s_channelDetected = false; // Reset detection for the new recording
 }
 
 bool pump() {
@@ -225,6 +209,33 @@ bool pump() {
     size_t samplesRead = bytesRead / 4;
     int32_t *samples32 = (int32_t *)s_readChunk;
 
+    // Auto-detect the active channel (Left vs Right) on the first chunk of
+    // data. The floating channel will read all 1s (0xFFFFFFFF) or be constant.
+    if (!s_channelDetected && samplesRead >= 8) {
+      uint64_t leftDiff = 0;
+      uint64_t rightDiff = 0;
+      for (size_t i = 0; i + 3 < samplesRead; i += 4) {
+        int16_t l0 = samples32[i] >> 16;
+        int16_t l1 = samples32[i + 2] >> 16;
+        int16_t r0 = samples32[i + 1] >> 16;
+        int16_t r1 = samples32[i + 3] >> 16;
+        leftDiff += abs(l0 - l1);
+        rightDiff += abs(r0 - r1);
+      }
+      if (rightDiff > leftDiff + 100) {
+        s_activeChannelIsLeft = false;
+        Serial.printf("[Audio] Auto-detected active channel: RIGHT "
+                      "(leftDiff=%llu, rightDiff=%llu)\n",
+                      leftDiff, rightDiff);
+      } else {
+        s_activeChannelIsLeft = true;
+        Serial.printf("[Audio] Auto-detected active channel: LEFT "
+                      "(leftDiff=%llu, rightDiff=%llu)\n",
+                      leftDiff, rightDiff);
+      }
+      s_channelDetected = true;
+    }
+
     if (!s_printedHex && samplesRead >= 8) {
       Serial.println(
           F("[Audio Debug] Raw 32-bit hex samples from I2S (Stereo pairs):"));
@@ -254,8 +265,12 @@ bool pump() {
 
     // Loop through the read samples in stereo frames (2 samples at a time: L0, R0)
     for (size_t i = 0; i + 1 < samplesRead; i += 2) {
-      // INMP441 L/R pin is tied to GND, so it outputs on the LEFT channel (index i)
-      float raw = (float)(samples32[i] >> 16);
+      float raw;
+      if (s_activeChannelIsLeft) {
+        raw = (float)(samples32[i] >> 16);
+      } else {
+        raw = (float)(samples32[i + 1] >> 16);
+      }
 
       // DC blocking high-pass filter formula
       float filtered = raw - s_lastRaw + R * s_lastFiltered;
