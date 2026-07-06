@@ -47,6 +47,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
     {
         WiFiClientSecure client;
         client.setInsecure(); // Skip certificate verification for speed and simplicity
+        client.setBufferSizes(4096, 1024); // Limit SSL buffer sizes to save ~27KB heap
         client.setTimeout(AI_HTTP_TIMEOUT_MS / 1000);
 
         Serial.println(F("[Groq STT] Connecting to api.groq.com..."));
@@ -220,6 +221,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
     // ========================================================================
     WiFiClientSecure client;
     client.setInsecure();
+    client.setBufferSizes(4096, 1024); // Limit SSL buffer sizes to save ~27KB heap
     client.setTimeout(AI_HTTP_TIMEOUT_MS / 1000);
 
     Serial.println(F("[Groq Chat] Connecting to api.groq.com..."));
