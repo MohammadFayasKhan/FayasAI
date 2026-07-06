@@ -1,11 +1,5 @@
 # Fayas AI Git Ignore Rules
 
-# Ignore environment variables file
-.env
-
-# Ignore generated credentials file containing sensitive information
-credentials.h
-
 # Arduino IDE & Build Artifacts
 build/
 libraries/

@@ -4,7 +4,7 @@
 
 **An ESP32-powered, touch-to-talk voice assistant with a premium, fully animated OLED interface, backed by Groq's high-speed Whisper (STT) and Llama 3.3 (LLM) APIs.**
 
-[![ESP32](https://img.shields.io/badge/ESP32-DevKit--V1-blue?style=flat-square&logo=espressif&logoColor=white)](https://www.espressif.com/)
+[![ESP32](https://img.shields.io/badge/Platform-ESP32-blue?style=flat-square&logo=espressif&logoColor=white)](https://www.espressif.com/)
 [![OLED](https://img.shields.io/badge/Display-OLED_SSD1306-00979D?style=flat-square)](https://adafruit.com/)
 [![MEMS Mic](https://img.shields.io/badge/Microphone-INMP441-E97825?style=flat-square)]()
 [![Cloud API](https://img.shields.io/badge/Cloud_API-Groq_Cloud-orange?style=flat-square)]()
@@ -56,7 +56,6 @@ graph TD
   - **Success Screen:** Linear drawing checkmark confirmation animation.
 - **No-Freeze Network Loops:** Animation ticks threaded through the HTTPS upload/download loop prevent the screen from freezing during server waiting.
 - **Wi-Fi Watchdog:** Periodic non-blocking background watchdog managing auto-reconnection and RSSI signals.
-- **Environment-Based Config:** Compile-time `.env` injection script creates local header secrets kept securely out of GitHub.
 
 ---
 
@@ -90,8 +89,7 @@ Detailed modular documentation is provided alongside the source code:
 ```
 Fayas_AI/
 ├── Fayas_AI.ino                 # Entry point + top-level state machine coordinator
-├── config.h                     # Pinouts, network settings, and tunable limits
-├── credentials.h.md             # Overview of the generated local header secrets
+├── config.h                     # Pinouts, credentials (SSID/Password/Groq Key), and thresholds
 ├── ai.h / ai.cpp                # Groq API scoped HTTPS clients (Whisper + Llama)
 ├── audio.h / audio.cpp          # I2S recording driver and WAV framing logic
 ├── animations.h / animations.cpp# 60 FPS graphics render engines
@@ -100,9 +98,7 @@ Fayas_AI/
 ├── utils.h / utils.cpp          # Debouncers, non-blocking timers, and bar converters
 ├── LICENSE                      # MIT License
 ├── README.md                    # Main repository document
-├── generate_credentials.py      # Python script compiling .env to credentials.h
-├── .env.example                 # Environment configuration template
-└── .gitignore                   # Ignore rules for local secrets and build cache
+└── .gitignore                   # Ignore rules for build caches and temp directories
 ```
 
 ---
@@ -130,33 +126,19 @@ git clone https://github.com/MohammadFayasKhan/FayasAI.git
 cd FayasAI
 ```
 
-**2. Setup local credentials**
+**2. Configure WiFi credentials**
 
-Copy `.env.example` to `.env` and fill in your Wi-Fi credentials and Groq API Key:
+Open `config.h` and fill in your Wi-Fi credentials and Groq API Key directly in the definitions:
 
-```bash
-cp .env.example .env
+```cpp
+#define WIFI_SSID       "YOUR_SSID"
+#define WIFI_PASSWORD   "YOUR_PASSWORD"
+#define AI_API_KEY      "YOUR_GROQ_API_KEY"
 ```
 
-Open `.env` and set your credentials:
+**3. Upload**
 
-```env
-WIFI_SSID="YOUR_SSID"
-WIFI_PASSWORD="YOUR_PASSWORD"
-AI_API_KEY="YOUR_GROQ_API_KEY"
-```
-
-**3. Generate credentials header**
-
-Run the Python generator script to compile the environment variables into a local header:
-
-```bash
-python3 generate_credentials.py
-```
-
-**4. Upload**
-
-- Open `Fayas_AI/Fayas_AI.ino` in the Arduino IDE.
+- Open `Fayas_AI.ino` in the Arduino IDE.
 - Select your board: `Tools → Board → ESP32 Arduino → ESP32 Dev Module`.
 - Select your partition scheme: `Tools → Partition Scheme → Huge APP (3MB No OTA / 1MB SPIFFS)`.
 - Select the serial COM port.

@@ -21,23 +21,13 @@
 
 #include <Arduino.h>
 
-// Try to include credentials from credentials.h (which is generated from the root .env file)
-#if __has_include("credentials.h")
-#include "credentials.h"
-#endif
-
 // ============================================================================
 // WI-FI CREDENTIALS
 // ============================================================================
 // Purpose: Network credentials used by wifi.cpp to join your local network.
-// Replace these with your own values before flashing the device or use the .env configuration.
-#ifndef WIFI_SSID
-#define WIFI_SSID       "Fayas"
-#endif
-
-#ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD   "777888666"
-#endif
+// Replace these with your own values before flashing the device.
+#define WIFI_SSID       "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
 
 // Maximum time (ms) to wait for an initial Wi-Fi connection before giving up
 // and showing the error screen. Prevents an indefinite boot-time hang.
@@ -51,9 +41,7 @@
 // AI API CONFIGURATION (GROQ)
 // ============================================================================
 // Purpose: Credentials and endpoint configuration for the AI API (using Groq).
-#ifndef AI_API_KEY
-#define AI_API_KEY   "YOUR_GROQ_API_KEY"
-#endif
+#define AI_API_KEY      "YOUR_GROQ_API_KEY"
 #define AI_API_HOST  "api.groq.com"
 #define AI_API_PORT  443
 
