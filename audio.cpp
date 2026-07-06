@@ -230,10 +230,10 @@ bool pump() {
       uint64_t leftDiff = 0;
       uint64_t rightDiff = 0;
       for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-        int16_t l0 = samples32[i] >> 16;
-        int16_t l1 = samples32[i + 2] >> 16;
-        int16_t r0 = samples32[i + 1] >> 16;
-        int16_t r1 = samples32[i + 3] >> 16;
+        int16_t l0 = samples32[i] >> 8;
+        int16_t l1 = samples32[i + 2] >> 8;
+        int16_t r0 = samples32[i + 1] >> 8;
+        int16_t r1 = samples32[i + 3] >> 8;
         leftDiff += abs(l0 - l1);
         rightDiff += abs(r0 - r1);
       }
@@ -257,8 +257,8 @@ bool pump() {
       for (int j = 0; j < 4; j++) {
         Serial.printf("  Pair %d - Left: 0x%08X (signed: %d), Right: 0x%08X "
                       "(signed: %d)\n",
-                      j, samples32[j * 2], (int)(samples32[j * 2] >> 16),
-                      samples32[j * 2 + 1], (int)(samples32[j * 2 + 1] >> 16));
+                      j, samples32[j * 2], (int)(samples32[j * 2] >> 8),
+                      samples32[j * 2 + 1], (int)(samples32[j * 2 + 1] >> 8));
       }
       s_printedHex = true;
     }
@@ -282,9 +282,9 @@ bool pump() {
     for (size_t i = 0; i + 1 < samplesRead; i += 2) {
       float raw;
       if (s_activeChannelIsLeft) {
-        raw = (float)(samples32[i] >> 16);
+        raw = (float)(samples32[i] >> 8);
       } else {
-        raw = (float)(samples32[i + 1] >> 16);
+        raw = (float)(samples32[i + 1] >> 8);
       }
 
       // DC blocking high-pass filter formula
