@@ -191,12 +191,10 @@ void startRecording() {
 bool pump() {
   // Purpose: Non-blocking drain of the I2S DMA buffer into our recording
   //          buffer. Called every loop() iteration while recording.
-  // Inputs: none. Outputs: true if the buffer just became full.
   // Logic: Since the I2S peripheral is configured for 16-bit data bit width
   //        and 32-bit slot width, the hardware automatically sign-extends and
   //        positions the 24-bit input into standard 16-bit signed integers.
-  //        We read 16-bit samples directly. Consecutive sample pairs of the
-  //        active channel are averaged to decimate 16kHz -> 8kHz.
+  //        We read 16-bit samples directly.
   if (!s_recording || s_buffer == nullptr) {
     return false;
   }
@@ -210,14 +208,11 @@ bool pump() {
   // We run I2S hardware in stereo mode at 16kHz.
   // 1 frame contains 1 Left and 1 Right sample (each is 16-bit/2 bytes).
   // So 1 frame = 4 bytes.
-  // We decimate 16kHz -> 8kHz by taking two consecutive samples of the active
-  // channel and averaging them.
-  // Thus, 2 frames read from I2S (8 bytes) -> 1 mono sample written to
-  // destination (2 bytes). Therefore, bytesToRequest from I2S is
-  // remainingCapacity * 4.
-  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 4);
-  // Align to 8 bytes (two stereo frames / 4 samples: L0, R0, L1, R1)
-  bytesToRequest = (bytesToRequest / 8) * 8;
+  // Since we write 1 mono sample (2 bytes) per I2S frame, the ratio of
+  // input-to-output bytes is 2 to 1.
+  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 2);
+  // Align to 4 bytes (one stereo frame: L0, R0)
+  bytesToRequest = (bytesToRequest / 4) * 4;
 
   if (bytesToRequest == 0) {
     return false;
@@ -233,7 +228,7 @@ bool pump() {
     int16_t *samples16 = (int16_t *)s_readChunk;
 
     // Auto-detect the active channel (Left vs Right) on the first chunk of
-    // data. The floating channel will read all 1s (0xFFFFFFFF / 0xFFFF) or be constant.
+    // data. The floating channel will read all 1s (0xFFFF) or be constant.
     if (!s_channelDetected && samplesRead >= 8) {
       uint64_t leftDiff = 0;
       uint64_t rightDiff = 0;
@@ -282,18 +277,14 @@ bool pump() {
     const float LIMITER_THRESHOLD = 24000.0f;
     const float LIMITER_KNEE = 8000.0f;
 
-    // Loop through the read samples in stereo frames (4 samples at a time: L0, R0, L1, R1)
-    for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-      float raw0, raw1;
+    // Loop through the read samples in stereo frames (2 samples at a time: L0, R0)
+    for (size_t i = 0; i + 1 < samplesRead; i += 2) {
+      float raw;
       if (s_activeChannelIsLeft) {
-        raw0 = (float)samples16[i];
-        raw1 = (float)samples16[i + 2];
+        raw = (float)samples16[i];
       } else {
-        raw0 = (float)samples16[i + 1];
-        raw1 = (float)samples16[i + 3];
+        raw = (float)samples16[i + 1];
       }
-
-      float raw = (raw0 + raw1) * 0.5f;
 
       // DC blocking high-pass filter formula
       float filtered = raw - s_lastRaw + R * s_lastFiltered;
