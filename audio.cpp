@@ -97,7 +97,7 @@ bool begin() {
   i2s_std_config_t stdCfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(
           16000), // Run hardware at 16kHz (minimum for INMP441)
-      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
@@ -114,7 +114,8 @@ bool begin() {
                   },
           },
   };
-  // INMP441 with L/R pin tied to GND outputs on the left channel.
+  // Force 32-bit slot width so the INMP441 gets 64 SCK cycles per WS frame
+  stdCfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
   stdCfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
 
   if (i2s_channel_init_std_mode(s_rxHandle, &stdCfg) != ESP_OK) {
@@ -191,13 +192,11 @@ bool pump() {
   // Purpose: Non-blocking drain of the I2S DMA buffer into our recording
   //          buffer. Called every loop() iteration while recording.
   // Inputs: none. Outputs: true if the buffer just became full.
-  // Logic: Since the INMP441 outputs 24-bit data inside 32-bit slots, we
-  //        read 32-bit samples (4 bytes each) from the I2S peripheral and
-  //        shift them right by 16 bits to get a 16-bit-range value per
-  //        sample. Consecutive sample pairs are averaged (a simple
-  //        anti-aliasing low-pass) before being decimated 16kHz -> 8kHz,
-  //        and AUDIO_GAIN_MULTIPLIER plus a soft-knee limiter (not a hard
-  //        clamp) restore volume without harsh digital clipping.
+  // Logic: Since the I2S peripheral is configured for 16-bit data bit width
+  //        and 32-bit slot width, the hardware automatically sign-extends and
+  //        positions the 24-bit input into standard 16-bit signed integers.
+  //        We read 16-bit samples directly. Consecutive sample pairs of the
+  //        active channel are averaged to decimate 16kHz -> 8kHz.
   if (!s_recording || s_buffer == nullptr) {
     return false;
   }
@@ -209,16 +208,16 @@ bool pump() {
   }
 
   // We run I2S hardware in stereo mode at 16kHz.
-  // 1 frame contains 1 Left and 1 Right sample (each is 32-bit/4 bytes).
-  // So 1 frame = 8 bytes.
+  // 1 frame contains 1 Left and 1 Right sample (each is 16-bit/2 bytes).
+  // So 1 frame = 4 bytes.
   // We decimate 16kHz -> 8kHz by taking two consecutive samples of the active
   // channel and averaging them.
-  // Thus, 2 frames read from I2S (16 bytes) -> 1 mono sample written to
+  // Thus, 2 frames read from I2S (8 bytes) -> 1 mono sample written to
   // destination (2 bytes). Therefore, bytesToRequest from I2S is
-  // remainingCapacity * 8.
-  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 8);
-  // Align to 16 bytes (two stereo frames / 4 samples: L0, R0, L1, R1)
-  bytesToRequest = (bytesToRequest / 16) * 16;
+  // remainingCapacity * 4.
+  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 4);
+  // Align to 8 bytes (two stereo frames / 4 samples: L0, R0, L1, R1)
+  bytesToRequest = (bytesToRequest / 8) * 8;
 
   if (bytesToRequest == 0) {
     return false;
@@ -230,23 +229,17 @@ bool pump() {
                        0 /* timeout_ms = don't block */);
 
   if (result == ESP_OK && bytesRead > 0) {
-    size_t samplesRead = bytesRead / 4;
-    int32_t *samples32 = (int32_t *)s_readChunk;
+    size_t samplesRead = bytesRead / 2;
+    int16_t *samples16 = (int16_t *)s_readChunk;
 
     // Auto-detect the active channel (Left vs Right) on the first chunk of
-    // data. The floating channel will read all 1s (0xFFFFFFFF) or be constant,
-    // while the active microphone channel will have changing values.
-    if (!s_channelDetected && samplesRead >= 16) {
+    // data. The floating channel will read all 1s (0xFFFFFFFF / 0xFFFF) or be constant.
+    if (!s_channelDetected && samplesRead >= 8) {
       uint64_t leftDiff = 0;
       uint64_t rightDiff = 0;
       for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-        int32_t l0 = samples32[i] >> 16;
-        int32_t l1 = samples32[i + 2] >> 16;
-        int32_t r0 = samples32[i + 1] >> 16;
-        int32_t r1 = samples32[i + 3] >> 16;
-
-        leftDiff += (l0 > l1) ? (l0 - l1) : (l1 - l0);
-        rightDiff += (r0 > r1) ? (r0 - r1) : (r1 - r0);
+        leftDiff += abs(samples16[i] - samples16[i + 2]);
+        rightDiff += abs(samples16[i + 1] - samples16[i + 3]);
       }
       if (rightDiff > leftDiff + 100) {
         s_activeChannelIsLeft = false;
@@ -264,12 +257,12 @@ bool pump() {
 
     if (!s_printedHex && samplesRead >= 8) {
       Serial.println(
-          F("[Audio Debug] Raw 32-bit hex samples from I2S (Stereo pairs):"));
+          F("[Audio Debug] Raw 16-bit hex samples from I2S (Stereo pairs):"));
       for (int j = 0; j < 4; j++) {
-        Serial.printf("  Pair %d - Left: 0x%08X (signed: %d), Right: 0x%08X "
+        Serial.printf("  Pair %d - Left: 0x%04X (signed: %d), Right: 0x%04X "
                       "(signed: %d)\n",
-                      j, samples32[j * 2], samples32[j * 2],
-                      samples32[j * 2 + 1], samples32[j * 2 + 1]);
+                      j, (uint16_t)samples16[j * 2], samples16[j * 2],
+                      (uint16_t)samples16[j * 2 + 1], samples16[j * 2 + 1]);
       }
       s_printedHex = true;
     }
@@ -286,32 +279,20 @@ bool pump() {
 #else
     const float R = 0.97f; // ~80Hz cutoff at 16kHz sample rate
 #endif
-    // Soft-knee limiter constants. Instead of hard-clamping loud peaks
-    // (which produces harsh square-wave-like digital clipping that
-    // badly confuses Whisper), we compress the signal smoothly once it
-    // crosses a threshold, preserving intelligibility on loud syllables.
     const float LIMITER_THRESHOLD = 24000.0f;
     const float LIMITER_KNEE = 8000.0f;
 
-    // Loop through the read samples in stereo frames (4 samples at a time: L0,
-    // R0, L1, R1)
+    // Loop through the read samples in stereo frames (4 samples at a time: L0, R0, L1, R1)
     for (size_t i = 0; i + 3 < samplesRead; i += 4) {
       float raw0, raw1;
       if (s_activeChannelIsLeft) {
-        raw0 = (float)(samples32[i] >> 16);
-        raw1 = (float)(samples32[i + 2] >> 16);
+        raw0 = (float)samples16[i];
+        raw1 = (float)samples16[i + 2];
       } else {
-        raw0 = (float)(samples32[i + 1] >> 16);
-        raw1 = (float)(samples32[i + 3] >> 16);
+        raw0 = (float)samples16[i + 1];
+        raw1 = (float)samples16[i + 3];
       }
 
-      // Anti-aliasing: average the sample-pair being discarded
-      // instead of simply dropping the odd one. This is a cheap
-      // boxcar low-pass filter that attenuates energy above the new
-      // Nyquist limit (4kHz) *before* decimating, preventing that
-      // energy from folding back into the speech band as noise/
-      // artifacts on consonants ("s", "t", "k" sounds) - which is
-      // what naive sample-dropping was doing before.
       float raw = (raw0 + raw1) * 0.5f;
 
       // DC blocking high-pass filter formula
@@ -322,9 +303,7 @@ bool pump() {
       // Apply digital gain multiplier to boost volume
       filtered *= AUDIO_GAIN_MULTIPLIER;
 
-      // Soft-knee limiter: compress values above the threshold
-      // smoothly instead of hard-clamping, avoiding harsh distortion
-      // on loud speech while quieter speech still gets the full gain.
+      // Soft-knee limiter: compress values
       float absVal = fabsf(filtered);
       if (absVal > LIMITER_THRESHOLD) {
         float over = absVal - LIMITER_THRESHOLD;
@@ -333,8 +312,6 @@ bool pump() {
         filtered = (filtered > 0.0f) ? compressed : -compressed;
       }
 
-      // Final hard clamp is now just a safety net; the limiter above
-      // should mean this rarely triggers.
       int32_t val = (int32_t)filtered;
       if (val > 32767)
         val = 32767;
