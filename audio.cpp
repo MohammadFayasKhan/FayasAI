@@ -75,7 +75,27 @@ bool begin() {
   //        already claimed by another peripheral; malloc/ps_malloc fail
   //        under memory pressure. Both are reported via the return value.
 
-  // --- Step 1: Create the RX channel ---
+  // --- Step 1: Allocate the recording buffer ONCE, permanently ---
+  // This buffer used to be malloc'd fresh at the start of every recording
+  // and free'd after every send. On an ESP32 without PSRAM, that
+  // malloc/free churn - interleaved with the small, irregularly-sized
+  // allocations TLS and JSON parsing do during each Groq API call -
+  // fragments the ~320KB internal heap over time. Eventually no single
+  // *contiguous* block big enough for this buffer remains, even though
+  // total free memory looks fine, and every future recording fails.
+  // Reserving it FIRST here, before the I2S driver allocates its DMA buffers,
+  // avoids memory fragmentation failures.
+  s_bufferCapacity = WAV_HEADER_SIZE_BYTES + AUDIO_MAX_BUFFER_BYTES;
+  s_buffer = allocateAudioBuffer(s_bufferCapacity);
+  if (s_buffer == nullptr) {
+    Serial.println(
+        F("[Audio] FATAL: could not allocate recording buffer at boot!"));
+    return false;
+  }
+  Serial.printf("[Audio] Allocated permanent recording buffer: %u bytes\n",
+                s_bufferCapacity);
+
+  // --- Step 2: Create the RX channel ---
   i2s_chan_config_t chanCfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT_NUM, I2S_ROLE_MASTER);
   chanCfg.dma_desc_num = AUDIO_DMA_BUF_COUNT;
@@ -83,11 +103,6 @@ bool begin() {
 
   if (i2s_new_channel(&chanCfg, NULL, &s_rxHandle) != ESP_OK) {
     Serial.println(F("[Audio] i2s_new_channel failed"));
-    return false;
-  }
-  Serial.println(F("[Audio] I2S channel created"));
-
-    // Free the buffer if we fail, though we'll likely halt anyway.
     free(s_buffer);
     s_buffer = nullptr;
     return false;
