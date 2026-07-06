@@ -41,14 +41,14 @@ graph TD
     
     Home -->|Touch & Hold Button| Listening[LISTENING: Pulsing rings + voice waveform]:::state
     
-    subgraph Audio Capture & WAV Generation (Hardware Stage)
+    subgraph "Audio Capture & WAV Generation (Hardware Stage)"
         Listening -->|INMP441 I2S MEMS Mic| Record[Record Speech to RAM Buffer]:::hardware
         Record -->|Soft-knee Gain Limiter| Waveform[Animate OLED Voice Level Waveform]:::hardware
     end
     
     Waveform -->|Release Button| Thinking[THINKING: Dual orbiting variables spinner]:::state
     
-    subgraph Scoped Groq API Connections (Cloud Stage)
+    subgraph "Scoped Groq API Connections (Cloud Stage)"
         Thinking -->|HTTPS POST Raw WAV Binary| STT[Groq Whisper STT API: whisper-large-v3]:::api
         STT -->|Transcribed Text String| LLM[Groq Chat API: llama-3.3-70b-versatile]:::api
     end
