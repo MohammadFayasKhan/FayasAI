@@ -31,13 +31,35 @@ Every single visual transition (boot, home, listening, thinking, response, error
 
 ```mermaid
 graph TD
-    Home[HOME: Idle resting orb] -->|Button Hold| Listening[LISTENING: Pulsing rings + waveform]
-    Listening -->|Button Release| Thinking[THINKING: Dual orbital spinner]
-    Thinking -->|STT + LLM API Success| Response[RESPONSE: Scrollable typewriter]
-    Thinking -->|API Timeout / Error| Error[ERROR: Shaking screen & retry]
-    Response -->|Button Tap| Success[SUCCESS: Checkmark validation]
+    %% Define Styles for Premium Aesthetics
+    classDef hardware fill:#1A1A2E,stroke:#0F3460,stroke-width:2px,color:#FFFFFF;
+    classDef state fill:#16213E,stroke:#0F3460,stroke-width:2px,color:#00D2FC;
+    classDef api fill:#0F3460,stroke:#E94560,stroke-width:2px,color:#FFB800;
+
+    %% Nodes & Transitions
+    Boot([BOOT: Power-On Splash & Hardware Diagnostics]):::state --> Home[HOME: Idle Breathing Orb & Particle Drift]:::state
+    
+    Home -->|Touch & Hold Button| Listening[LISTENING: Pulsing rings + voice waveform]:::state
+    
+    subgraph Audio Capture & WAV Generation (Hardware Stage)
+        Listening -->|INMP441 I2S MEMS Mic| Record[Record Speech to RAM Buffer]:::hardware
+        Record -->|Soft-knee Gain Limiter| Waveform[Animate OLED Voice Level Waveform]:::hardware
+    end
+    
+    Waveform -->|Release Button| Thinking[THINKING: Dual orbiting variables spinner]:::state
+    
+    subgraph Scoped Groq API Connections (Cloud Stage)
+        Thinking -->|HTTPS POST Raw WAV Binary| STT[Groq Whisper STT API: whisper-large-v3]:::api
+        STT -->|Transcribed Text String| LLM[Groq Chat API: llama-3.3-70b-versatile]:::api
+    end
+    
+    LLM -->|Text Response| Response[RESPONSE: Scrollable typewriter text screen]:::state
+    LLM -->|Request Timeout / Error| Error[ERROR: Coordinate shifting display shake]:::state
+    
+    Response -->|Tap Button| Success[SUCCESS: Checkmark animation]:::state
     Success --> Home
-    Error -->|Button Tap| Home
+    
+    Error -->|Tap Button| Home
 ```
 
 ---
