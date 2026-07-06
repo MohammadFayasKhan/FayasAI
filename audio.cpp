@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "config.h"
 #include <driver/i2s_std.h>
+#include <esp_heap_caps.h>
 #include <math.h>
 
 namespace FayasAudio {
@@ -49,6 +50,10 @@ static uint32_t s_totalSamplesProcessed = 0;
 static const size_t I2S_READ_CHUNK_BYTES = 1024;
 static uint8_t s_readChunk[I2S_READ_CHUNK_BYTES];
 
+/// Track whether the board has PSRAM so we consistently use the right
+/// allocator without re-probing every time.
+static bool s_hasPSRAM = false;
+
 /**
  * @brief Allocate the recording buffer, preferring PSRAM if the board has
  *        it so longer recordings don't compete with the rest of the
@@ -57,7 +62,7 @@ static uint8_t s_readChunk[I2S_READ_CHUNK_BYTES];
  * @return Pointer to allocated memory, or nullptr on failure.
  */
 static uint8_t *allocateAudioBuffer(size_t sizeBytes) {
-  if (psramFound()) {
+  if (s_hasPSRAM) {
     uint8_t *psramBuf = (uint8_t *)ps_malloc(sizeBytes);
     if (psramBuf != nullptr) {
       return psramBuf;
@@ -67,37 +72,39 @@ static uint8_t *allocateAudioBuffer(size_t sizeBytes) {
   return (uint8_t *)malloc(sizeBytes);
 }
 
-bool begin() {
-  // Purpose: Configure the I2S peripheral for INMP441 input and allocate
-  //          the recording buffer once at startup.
-  // Inputs: none (all parameters come from config.h).
-  // Outputs: true if both the I2S driver and buffer allocation succeeded.
-  // Logic: Uses the new ESP-IDF 5.x I2S standard-mode driver API.
-  // Possible errors: i2s_new_channel/i2s_channel_init fail if pins are
-  //        already claimed by another peripheral; malloc/ps_malloc fail
-  //        under memory pressure. Both are reported via the return value.
+/// Print a snapshot of heap health to Serial for debugging memory issues.
+static void printHeapDiag(const char *label) {
+  Serial.printf("[Heap @ %s] Free: %u  MaxBlock: %u  PSRAM: %u\n",
+                label,
+                ESP.getFreeHeap(),
+                ESP.getMaxAllocHeap(),
+                ESP.getFreePsram());
+}
 
-  // --- Step 1: Allocate the recording buffer ONCE, permanently ---
-  // This buffer used to be malloc'd fresh at the start of every recording
-  // and free'd after every send. On an ESP32 without PSRAM, that
-  // malloc/free churn - interleaved with the small, irregularly-sized
-  // allocations TLS and JSON parsing do during each Groq API call -
-  // fragments the ~320KB internal heap over time. Eventually no single
-  // *contiguous* block big enough for this buffer remains, even though
-  // total free memory looks fine, and every future recording fails.
-  // Reserving it FIRST here, before the I2S driver allocates its DMA buffers,
-  // avoids memory fragmentation failures.
+bool begin() {
+  // Purpose: Configure the I2S peripheral for INMP441 input.
+  // Inputs: none (all parameters come from config.h).
+  // Outputs: true if the I2S driver initialized successfully.
+  // Logic: Uses the new ESP-IDF 5.x I2S standard-mode driver API.
+  //
+  // NOTE on buffer strategy: On boards WITHOUT PSRAM the audio buffer
+  // and the TLS session cannot coexist in the ~320 KB internal SRAM.
+  // Instead of allocating the buffer permanently, we allocate it fresh
+  // in startRecording() and free it in releaseBuffer() right after the
+  // WAV body is uploaded. This way audio and TLS take turns using the
+  // same memory. On boards WITH PSRAM the buffer goes to external RAM
+  // and this concern doesn't apply, but the pattern works fine either
+  // way.
+
+  s_hasPSRAM = psramFound();
   s_bufferCapacity = WAV_HEADER_SIZE_BYTES + AUDIO_MAX_BUFFER_BYTES;
-  s_buffer = allocateAudioBuffer(s_bufferCapacity);
-  if (s_buffer == nullptr) {
-    Serial.println(
-        F("[Audio] FATAL: could not allocate recording buffer at boot!"));
-    return false;
-  }
-  Serial.printf("[Audio] Allocated permanent recording buffer: %u bytes\n",
+
+  printHeapDiag("audio.begin() entry");
+  Serial.printf("[Audio] PSRAM detected: %s\n", s_hasPSRAM ? "YES" : "NO");
+  Serial.printf("[Audio] Recording buffer capacity: %u bytes (allocated on demand)\n",
                 s_bufferCapacity);
 
-  // --- Step 2: Create the RX channel ---
+  // --- Step 1: Create the RX channel ---
   i2s_chan_config_t chanCfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT_NUM, I2S_ROLE_MASTER);
   chanCfg.dma_desc_num = AUDIO_DMA_BUF_COUNT;
@@ -105,13 +112,11 @@ bool begin() {
 
   if (i2s_new_channel(&chanCfg, NULL, &s_rxHandle) != ESP_OK) {
     Serial.println(F("[Audio] i2s_new_channel failed"));
-    free(s_buffer);
-    s_buffer = nullptr;
     return false;
   }
   Serial.println(F("[Audio] I2S RX channel allocated"));
 
-  // --- Step 3: Configure standard mode ---
+  // --- Step 2: Configure standard mode ---
   i2s_std_config_t stdCfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(
           AUDIO_SAMPLE_RATE_HZ), // Set clock dynamically from config.h
@@ -142,7 +147,7 @@ bool begin() {
   }
   Serial.println(F("[Audio] I2S mode configured"));
 
-  // --- Step 4: Enable the channel ---
+  // --- Step 3: Enable the channel ---
   if (i2s_channel_enable(s_rxHandle) != ESP_OK) {
     Serial.println(F("[Audio] i2s_channel_enable failed"));
     return false;
@@ -150,18 +155,32 @@ bool begin() {
   Serial.println(F("[Audio] I2S channel enabled"));
 
   Serial.println(F("[Audio] I2S microphone initialized successfully"));
+  printHeapDiag("audio.begin() exit");
 
   return true;
 }
 
+static unsigned long s_recordDurationMs = 0;
+
 void startRecording() {
   s_pcmBytesWritten = 0;
 
+  // Allocate the recording buffer on demand if it was freed after the
+  // previous upload cycle (see releaseBuffer()). On no-PSRAM boards
+  // this is the moment TLS buffers have already been freed, so a large
+  // contiguous block is available.
   if (s_buffer == nullptr) {
-    // Should only happen if begin()'s allocation failed at boot.
-    Serial.println(F("[Audio] No recording buffer available!"));
-    s_recording = false;
-    return;
+    printHeapDiag("startRecording() pre-alloc");
+    s_buffer = allocateAudioBuffer(s_bufferCapacity);
+    if (s_buffer == nullptr) {
+      Serial.println(F("[Audio] ERROR: could not allocate recording buffer!"));
+      printHeapDiag("startRecording() alloc FAILED");
+      s_recording = false;
+      return;
+    }
+    Serial.printf("[Audio] Allocated recording buffer: %u bytes\n",
+                  s_bufferCapacity);
+    printHeapDiag("startRecording() post-alloc");
   }
 
   // Wait 100ms with BCLK running to give the INMP441 power supply and digital
@@ -179,6 +198,7 @@ void startRecording() {
 
   s_recording = true;
   s_recordStartMs = millis();
+  s_recordDurationMs = 0;
   s_lastRaw = 0.0f;
   s_lastFiltered = 0.0f;
   s_numClippedSamples = 0;
@@ -202,7 +222,7 @@ bool pump() {
 
   size_t remainingCapacity = AUDIO_MAX_BUFFER_BYTES - s_pcmBytesWritten;
   if (remainingCapacity == 0) {
-    s_recording = false;
+    stopRecording();
     return true; // Buffer full - caller should stop recording.
   }
 
@@ -304,19 +324,24 @@ bool pump() {
   }
 
   if (s_pcmBytesWritten >= AUDIO_MAX_BUFFER_BYTES) {
-    s_recording = false;
+    stopRecording();
     return true;
   }
   return false;
 }
 
-void stopRecording() { s_recording = false; }
+void stopRecording() {
+  if (s_recording) {
+    s_recordDurationMs = millis() - s_recordStartMs;
+    s_recording = false;
+  }
+}
 
 unsigned long getElapsedMs() {
-  if (!s_recording) {
-    return 0;
+  if (s_recording) {
+    return millis() - s_recordStartMs;
   }
-  return millis() - s_recordStartMs;
+  return s_recordDurationMs;
 }
 
 size_t getRecordedByteCount() { return s_pcmBytesWritten; }
@@ -477,11 +502,17 @@ const uint8_t *finalizeWav(size_t &outSize) {
 }
 
 void releaseBuffer() {
-  // The recording buffer is now allocated once in begin() and kept for
-  // the lifetime of the program (see the comment there for why). This
-  // function is kept so existing callers in main.ino don't need to
-  // change, but it intentionally no longer frees anything.
-  Serial.println(F("[Audio] Recording buffer retained (permanent allocation)"));
+  // Free the recording buffer to reclaim heap for TLS / JSON parsing.
+  // On no-PSRAM boards this is critical: the ~64 KB buffer and the
+  // ~45 KB TLS session cannot coexist in the ~320 KB internal SRAM.
+  // startRecording() will re-allocate it when the user presses the
+  // button again.
+  if (s_buffer != nullptr) {
+    free(s_buffer);
+    s_buffer = nullptr;
+    Serial.println(F("[Audio] Recording buffer FREED"));
+    printHeapDiag("releaseBuffer()");
+  }
 }
 
 } // namespace FayasAudio

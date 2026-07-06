@@ -164,17 +164,21 @@ static void updateWifiCache() {
   }
 }
 
-static void handleBoot() {
-  if (FayasAnimations::renderBoot()) {
-    Serial.println(
-        F("[Home] Boot animation complete. Waiting for button press..."));
-    transitionTo(AppState::HOME);
+static void handleBoot(bool frameDue) {
+  if (frameDue) {
+    if (FayasAnimations::renderBoot()) {
+      Serial.println(
+          F("[Home] Boot animation complete. Waiting for button press..."));
+      transitionTo(AppState::HOME);
+    }
   }
 }
 
-static void handleHome() {
-  FayasAnimations::renderHome(g_wifiConnectedCache, g_signalBarsCache,
-                              g_debugMode);
+static void handleHome(bool frameDue) {
+  if (frameDue) {
+    FayasAnimations::renderHome(g_wifiConnectedCache, g_signalBarsCache,
+                                g_debugMode);
+  }
 
   if (g_button.wasPressed()) {
     Serial.println(F("[Home] >>> BUTTON PRESSED <<<"));
@@ -190,14 +194,16 @@ static void handleHome() {
   }
 }
 
-static void handleListening() {
+static void handleListening(bool frameDue) {
   // Pump the I2S DMA buffer into RAM every loop iteration so recording
   // never stalls waiting for a big blocking read, keeping this screen's
   // animation smooth for the whole press-and-hold duration.
   bool bufferFull = FayasAudio::pump();
   unsigned long elapsed = FayasAudio::getElapsedMs();
 
-  FayasAnimations::renderListening(elapsed);
+  if (frameDue) {
+    FayasAnimations::renderListening(elapsed);
+  }
 
   if (g_button.wasReleased() || bufferFull) {
     FayasAudio::stopRecording();
@@ -255,15 +261,19 @@ static void handleThinking() {
   }
   Serial.printf("[Think] WAV ready: %u bytes (%.1f KB). Sending to AI...\n",
                 wavSize, wavSize / 1024.0f);
-  Serial.printf("[Think] Free heap before API call: %d bytes\n",
+  Serial.printf("[Think] Free heap before API call: %u bytes\n",
                 ESP.getFreeHeap());
+  Serial.printf("[Think] Largest free block: %u bytes\n",
+                ESP.getMaxAllocHeap());
 
   String responseText;
   unsigned long latencyMs = 0;
   FayasAI::AIResult result = FayasAI::sendAudio(wavData, wavSize, responseText,
                                                 latencyMs, onAIProgress);
 
-  // Reclaim audio memory immediately after the network call finishes
+  // Safety net: sendAudio() already frees the buffer after the WAV upload
+  // body is sent, but call releaseBuffer() here too in case an early
+  // return skipped the internal free (e.g. connect failure before upload).
   FayasAudio::releaseBuffer();
 
   g_lastLatencyMs = latencyMs;
@@ -285,8 +295,10 @@ static void handleThinking() {
   transitionTo(AppState::RESPONSE);
 }
 
-static void handleResponse() {
-  FayasAnimations::renderResponse(g_lastResponseText, g_lastLatencyMs);
+static void handleResponse(bool frameDue) {
+  if (frameDue) {
+    FayasAnimations::renderResponse(g_lastResponseText, g_lastLatencyMs);
+  }
 
   if (g_button.wasPressed()) {
     Serial.println(F("[Response] Button pressed. Transitioning to Success."));
@@ -294,8 +306,10 @@ static void handleResponse() {
   }
 }
 
-static void handleError() {
-  FayasAnimations::renderError(g_lastErrorMessage);
+static void handleError(bool frameDue) {
+  if (frameDue) {
+    FayasAnimations::renderError(g_lastErrorMessage);
+  }
 
   // Allow a button press to retry: if WiFi is the underlying problem,
   // attempt a reconnect; otherwise just return to Home so the user can
@@ -310,9 +324,11 @@ static void handleError() {
   }
 }
 
-static void handleSuccess() {
-  if (FayasAnimations::renderSuccess()) {
-    transitionTo(AppState::HOME);
+static void handleSuccess(bool frameDue) {
+  if (frameDue) {
+    if (FayasAnimations::renderSuccess()) {
+      transitionTo(AppState::HOME);
+    }
   }
 }
 
@@ -338,20 +354,13 @@ void loop() {
 
   switch (g_state) {
   case AppState::BOOT:
-    if (frameDue)
-      handleBoot();
+    handleBoot(frameDue);
     break;
   case AppState::HOME:
-    if (frameDue)
-      handleHome();
+    handleHome(frameDue);
     break;
   case AppState::LISTENING:
-    // Always pump audio; only throttle the *screen redraw* portion.
-    if (frameDue) {
-      handleListening();
-    } else {
-      FayasAudio::pump();
-    }
+    handleListening(frameDue);
     break;
   case AppState::THINKING:
     // handleThinking() performs a blocking network call internally;
@@ -359,16 +368,13 @@ void loop() {
     handleThinking();
     break;
   case AppState::RESPONSE:
-    if (frameDue)
-      handleResponse();
+    handleResponse(frameDue);
     break;
   case AppState::SUCCESS:
-    if (frameDue)
-      handleSuccess();
+    handleSuccess(frameDue);
     break;
   case AppState::ERROR_STATE:
-    if (frameDue)
-      handleError();
+    handleError(frameDue);
     break;
   case AppState::CONFIG_PORTAL:
     FayasWiFi::handlePortal();

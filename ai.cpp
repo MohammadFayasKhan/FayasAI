@@ -6,9 +6,11 @@
  */
 
 #include "ai.h"
+#include "audio.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <esp_heap_caps.h>
 #include "config.h"
 #include "fayaswifi.h"
 
@@ -20,6 +22,15 @@ static inline void tick(ProgressCallback onProgress) {
     if (onProgress != nullptr) {
         onProgress();
     }
+}
+
+/// Print a snapshot of heap health to Serial for debugging memory issues.
+static void printHeapDiag(const char *label) {
+    Serial.printf("[Heap @ %s] Free: %u  MaxBlock: %u  PSRAM: %u\n",
+                  label,
+                  ESP.getFreeHeap(),
+                  ESP.getMaxAllocHeap(),
+                  ESP.getFreePsram());
 }
 
 // Forward declarations
@@ -45,6 +56,8 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
     // STEP 1: Groq Whisper Speech-to-Text Transcription (Isolated Scope)
     // ========================================================================
     {
+        printHeapDiag("pre-STT connect");
+
         WiFiClientSecure client;
         client.setInsecure(); // Skip certificate verification for speed and simplicity
         client.setTimeout(AI_HTTP_TIMEOUT_MS / 1000);
@@ -57,68 +70,109 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
             return AIResult::ERR_CONNECT_FAILED;
         }
         tick(onProgress);
+        printHeapDiag("post-STT connect");
 
-        String boundary = "---------------------------ESP32Boundary";
-        String partModel = "--" + boundary + "\r\n" +
-                           "Content-Disposition: form-data; name=\"model\"\r\n\r\n" +
-                           GROQ_WHISPER_MODEL + "\r\n";
+        // ------------------------------------------------------------------
+        // Build multipart content length WITHOUT allocating String objects.
+        // Each part is written directly via client.printf() below; we just
+        // need the total byte count up front for the Content-Length header.
+        // ------------------------------------------------------------------
+        static const char BOUNDARY[] = "---------------------------ESP32Boundary";
 
-        String partLanguage = "";
+        // Pre-calculate each part's wire size (including CRLF framing)
+        // Part: model
+        //   "--" BOUNDARY "\r\n"
+        //   "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
+        //   GROQ_WHISPER_MODEL "\r\n"
+        const size_t partModelLen = 2 + strlen(BOUNDARY) + 2
+            + strlen("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+            + strlen(GROQ_WHISPER_MODEL) + 2;
+
+        // Part: language (optional)
+        size_t partLangLen = 0;
 #ifdef GROQ_WHISPER_LANGUAGE
         if (strlen(GROQ_WHISPER_LANGUAGE) > 0) {
-            partLanguage = "--" + boundary + "\r\n" +
-                           "Content-Disposition: form-data; name=\"language\"\r\n\r\n" +
-                           GROQ_WHISPER_LANGUAGE + "\r\n";
+            partLangLen = 2 + strlen(BOUNDARY) + 2
+                + strlen("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+                + strlen(GROQ_WHISPER_LANGUAGE) + 2;
         }
 #endif
 
-        String partPrompt = "";
+        // Part: prompt (optional)
+        size_t partPromptLen = 0;
 #ifdef GROQ_WHISPER_PROMPT
         if (strlen(GROQ_WHISPER_PROMPT) > 0) {
-            partPrompt = "--" + boundary + "\r\n" +
-                         "Content-Disposition: form-data; name=\"prompt\"\r\n\r\n" +
-                         GROQ_WHISPER_PROMPT + "\r\n";
+            partPromptLen = 2 + strlen(BOUNDARY) + 2
+                + strlen("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+                + strlen(GROQ_WHISPER_PROMPT) + 2;
         }
 #endif
 
-        // temperature=0 makes Whisper decode greedily (most-likely tokens only)
-        String partTemperature = "--" + boundary + "\r\n" +
-                                 "Content-Disposition: form-data; name=\"temperature\"\r\n\r\n" +
-                                 "0\r\n";
+        // Part: temperature
+        const size_t partTempLen = 2 + strlen(BOUNDARY) + 2
+            + strlen("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n")
+            + 1 /*"0"*/ + 2;
 
-        String partFileHeader = "--" + boundary + "\r\n" +
-                                "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n" +
-                                "Content-Type: audio/wav\r\n\r\n";
-        String partFileFooter = "\r\n--" + boundary + "--\r\n";
+        // Part: file header
+        const size_t partFileHdrLen = 2 + strlen(BOUNDARY) + 2
+            + strlen("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+            + strlen("Content-Type: audio/wav\r\n\r\n");
 
-        size_t whisperContentLength = partModel.length() + partLanguage.length() + partPrompt.length() + partTemperature.length() + partFileHeader.length() + wavSize + partFileFooter.length();
+        // Part: file footer  "\r\n--" BOUNDARY "--\r\n"
+        const size_t partFileFooterLen = 2 + 2 + strlen(BOUNDARY) + 2 + 2;
 
-        // Send HTTP Headers for Whisper
+        size_t whisperContentLength = partModelLen + partLangLen + partPromptLen
+            + partTempLen + partFileHdrLen + wavSize + partFileFooterLen;
+
+        // Send HTTP request line + headers
         client.println(F("POST /openai/v1/audio/transcriptions HTTP/1.1"));
         client.printf("Host: %s\r\n", AI_API_HOST);
         client.printf("Authorization: Bearer %s\r\n", FayasWiFi::getApiKey().c_str());
-        client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
-        client.printf("Content-Length: %d\r\n", whisperContentLength);
+        client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", BOUNDARY);
+        client.printf("Content-Length: %u\r\n", whisperContentLength);
         client.println(F("Connection: close"));
         client.println();
 
-        // Stream Whisper Body
-        client.print(partModel);
-        tick(onProgress);
-        if (partLanguage.length() > 0) {
-            client.print(partLanguage);
-            tick(onProgress);
-        }
-        if (partPrompt.length() > 0) {
-            client.print(partPrompt);
-            tick(onProgress);
-        }
-        client.print(partTemperature);
-        tick(onProgress);
-        client.print(partFileHeader);
+        // Stream multipart body directly — zero heap String allocations
+        // Part: model
+        client.printf("--%s\r\n", BOUNDARY);
+        client.printf("Content-Disposition: form-data; name=\"model\"\r\n\r\n");
+        client.printf("%s\r\n", GROQ_WHISPER_MODEL);
         tick(onProgress);
 
-        // Stream WAV binary data in 1KB chunks to keep memory usage low
+        // Part: language
+#ifdef GROQ_WHISPER_LANGUAGE
+        if (strlen(GROQ_WHISPER_LANGUAGE) > 0) {
+            client.printf("--%s\r\n", BOUNDARY);
+            client.printf("Content-Disposition: form-data; name=\"language\"\r\n\r\n");
+            client.printf("%s\r\n", GROQ_WHISPER_LANGUAGE);
+            tick(onProgress);
+        }
+#endif
+
+        // Part: prompt
+#ifdef GROQ_WHISPER_PROMPT
+        if (strlen(GROQ_WHISPER_PROMPT) > 0) {
+            client.printf("--%s\r\n", BOUNDARY);
+            client.printf("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n");
+            client.printf("%s\r\n", GROQ_WHISPER_PROMPT);
+            tick(onProgress);
+        }
+#endif
+
+        // Part: temperature
+        client.printf("--%s\r\n", BOUNDARY);
+        client.printf("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n");
+        client.printf("0\r\n");
+        tick(onProgress);
+
+        // Part: file header
+        client.printf("--%s\r\n", BOUNDARY);
+        client.printf("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n");
+        client.printf("Content-Type: audio/wav\r\n\r\n");
+        tick(onProgress);
+
+        // Stream WAV binary data in 1KB chunks
         size_t offset = 0;
         const size_t CHUNK_SIZE = 1024;
         while (offset < wavSize) {
@@ -127,8 +181,17 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
             offset += writeLen;
             tick(onProgress);
         }
-        client.print(partFileFooter);
+
+        // File footer
+        client.printf("\r\n--%s--\r\n", BOUNDARY);
         tick(onProgress);
+
+        // ==================================================================
+        // WAV data is fully transmitted. Free the audio buffer NOW to
+        // reclaim ~64 KB before we start reading the response.
+        // ==================================================================
+        FayasAudio::releaseBuffer();
+        printHeapDiag("post-WAV-upload (buffer freed)");
 
         // Read Response Status
         int whisperStatusCode = 0;
@@ -214,6 +277,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
 
     // Yield execution and let the ESP32 heap defragment
     delay(150);
+    printHeapDiag("pre-Chat connect");
 
     // ========================================================================
     // STEP 2: Groq Chat Completion (Llama Model - Fresh SSL connection)
@@ -230,6 +294,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
         return AIResult::ERR_CONNECT_FAILED;
     }
     tick(onProgress);
+    printHeapDiag("post-Chat connect");
 
     // Build Chat JSON Payload
     JsonDocument chatPayload;
