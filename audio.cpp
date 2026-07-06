@@ -237,21 +237,26 @@ bool pump() {
     // data. The floating channel will read all 1s (0xFFFFFFFF) or be constant,
     // while the active microphone channel will have changing values.
     if (!s_channelDetected && samplesRead >= 16) {
-      long leftDiff = 0;
-      long rightDiff = 0;
+      uint64_t leftDiff = 0;
+      uint64_t rightDiff = 0;
       for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-        leftDiff += abs(samples32[i] - samples32[i + 2]);
-        rightDiff += abs(samples32[i + 1] - samples32[i + 3]);
+        int32_t l0 = samples32[i] >> 16;
+        int32_t l1 = samples32[i + 2] >> 16;
+        int32_t r0 = samples32[i + 1] >> 16;
+        int32_t r1 = samples32[i + 3] >> 16;
+
+        leftDiff += (l0 > l1) ? (l0 - l1) : (l1 - l0);
+        rightDiff += (r0 > r1) ? (r0 - r1) : (r1 - r0);
       }
-      if (rightDiff > leftDiff + 1000) {
+      if (rightDiff > leftDiff + 100) {
         s_activeChannelIsLeft = false;
         Serial.printf("[Audio] Auto-detected active channel: RIGHT "
-                      "(leftDiff=%ld, rightDiff=%ld)\n",
+                      "(leftDiff=%llu, rightDiff=%llu)\n",
                       leftDiff, rightDiff);
       } else {
         s_activeChannelIsLeft = true;
         Serial.printf("[Audio] Auto-detected active channel: LEFT "
-                      "(leftDiff=%ld, rightDiff=%ld)\n",
+                      "(leftDiff=%llu, rightDiff=%llu)\n",
                       leftDiff, rightDiff);
       }
       s_channelDetected = true;
