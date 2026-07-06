@@ -36,10 +36,12 @@ static unsigned long s_recordStartMs = 0;
 // DC Blocking (High-pass) filter state
 static float s_lastRaw = 0.0f;
 static float s_lastFiltered = 0.0f;
-static bool s_printedHex = false;
-static bool s_discardNextChunk = false;
-static bool s_channelDetected = false;
-static bool s_activeChannelIsLeft = true;
+// Diagnostics state
+static uint32_t s_numClippedSamples = 0;
+static uint32_t s_numZeroSamples = 0;
+static double s_sumSquares = 0;
+static int16_t s_peakAmplitude = 0;
+static uint32_t s_totalSamplesProcessed = 0;
 
 // Small scratch buffer used to pull samples out of the I2S DMA ring buffer
 // on each pump() call, sized to move a reasonable chunk without blocking
@@ -114,7 +116,7 @@ bool begin() {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(
           AUDIO_SAMPLE_RATE_HZ), // Set clock dynamically from config.h
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
-                                                      I2S_SLOT_MODE_STEREO),
+                                                      I2S_SLOT_MODE_MONO),
       .gpio_cfg =
           {
               .mclk = I2S_GPIO_UNUSED,
@@ -132,7 +134,7 @@ bool begin() {
   };
   // Force 32-bit slot width so the INMP441 gets 64 SCK cycles per WS frame
   stdCfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
-  stdCfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+  stdCfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
 
   if (i2s_channel_init_std_mode(s_rxHandle, &stdCfg) != ESP_OK) {
     Serial.println(F("[Audio] i2s_channel_init_std_mode failed"));
@@ -179,9 +181,11 @@ void startRecording() {
   s_recordStartMs = millis();
   s_lastRaw = 0.0f;
   s_lastFiltered = 0.0f;
-  s_printedHex = false;
-  s_discardNextChunk = false;
-  s_channelDetected = false; // Reset detection for the new recording
+  s_numClippedSamples = 0;
+  s_numZeroSamples = 0;
+  s_sumSquares = 0;
+  s_peakAmplitude = 0;
+  s_totalSamplesProcessed = 0;
 }
 
 bool pump() {
@@ -202,14 +206,13 @@ bool pump() {
     return true; // Buffer full - caller should stop recording.
   }
 
-  // We run I2S hardware in stereo mode at 12kHz.
-  // 1 frame contains 1 Left and 1 Right sample (each is 32-bit/4 bytes).
-  // So 1 frame = 8 bytes.
+  // We run I2S hardware in mono mode.
+  // 1 frame contains 1 sample (32-bit/4 bytes).
   // Since we write 1 mono sample (2 bytes) per I2S frame, the ratio of
-  // input-to-output bytes is 4 to 1.
-  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 4);
-  // Align to 8 bytes (one stereo frame: L0, R0)
-  bytesToRequest = (bytesToRequest / 8) * 8;
+  // input-to-output bytes is 2 to 1.
+  size_t bytesToRequest = min(I2S_READ_CHUNK_BYTES, remainingCapacity * 2);
+  // Align to 4 bytes (one 32-bit frame)
+  bytesToRequest = (bytesToRequest / 4) * 4;
 
   if (bytesToRequest == 0) {
     return false;
@@ -223,45 +226,6 @@ bool pump() {
   if (result == ESP_OK && bytesRead > 0) {
     size_t samplesRead = bytesRead / 4;
     int32_t *samples32 = (int32_t *)s_readChunk;
-
-    // Auto-detect the active channel (Left vs Right) on the first chunk of
-    // data. The floating channel will read all 1s (0xFFFFFFFF) or be constant.
-    if (!s_channelDetected && samplesRead >= 8) {
-      uint64_t leftDiff = 0;
-      uint64_t rightDiff = 0;
-      for (size_t i = 0; i + 3 < samplesRead; i += 4) {
-        int16_t l0 = samples32[i] >> 8;
-        int16_t l1 = samples32[i + 2] >> 8;
-        int16_t r0 = samples32[i + 1] >> 8;
-        int16_t r1 = samples32[i + 3] >> 8;
-        leftDiff += abs(l0 - l1);
-        rightDiff += abs(r0 - r1);
-      }
-      if (rightDiff > leftDiff + 100) {
-        s_activeChannelIsLeft = false;
-        Serial.printf("[Audio] Auto-detected active channel: RIGHT "
-                      "(leftDiff=%llu, rightDiff=%llu)\n",
-                      leftDiff, rightDiff);
-      } else {
-        s_activeChannelIsLeft = true;
-        Serial.printf("[Audio] Auto-detected active channel: LEFT "
-                      "(leftDiff=%llu, rightDiff=%llu)\n",
-                      leftDiff, rightDiff);
-      }
-      s_channelDetected = true;
-    }
-
-    if (!s_printedHex && samplesRead >= 8) {
-      Serial.println(
-          F("[Audio Debug] Raw 32-bit hex samples from I2S (Stereo pairs):"));
-      for (int j = 0; j < 4; j++) {
-        Serial.printf("  Pair %d - Left: 0x%08X (signed: %d), Right: 0x%08X "
-                      "(signed: %d)\n",
-                      j, samples32[j * 2], (int)(samples32[j * 2] >> 8),
-                      samples32[j * 2 + 1], (int)(samples32[j * 2 + 1] >> 8));
-      }
-      s_printedHex = true;
-    }
 
     int16_t *dest16 =
         (int16_t *)(s_buffer + WAV_HEADER_SIZE_BYTES + s_pcmBytesWritten);
@@ -278,14 +242,12 @@ bool pump() {
     const float LIMITER_THRESHOLD = 24000.0f;
     const float LIMITER_KNEE = 8000.0f;
 
-    // Loop through the read samples in stereo frames (2 samples at a time: L0, R0)
-    for (size_t i = 0; i + 1 < samplesRead; i += 2) {
-      float raw;
-      if (s_activeChannelIsLeft) {
-        raw = (float)(samples32[i] >> 8);
-      } else {
-        raw = (float)(samples32[i + 1] >> 8);
-      }
+    // Loop through the mono read samples
+    for (size_t i = 0; i < samplesRead; i++) {
+      // The ESP32 I2S driver receives 24-bit data left-justified in a 32-bit register.
+      // So the 24-bits are in bits [31:8]. Shifting right by 16 gives us the most significant
+      // 16 bits of the audio data in a 16-bit signed format.
+      float raw = (float)(samples32[i] >> 16);
 
       // DC blocking high-pass filter formula
       float filtered = raw - s_lastRaw + R * s_lastFiltered;
@@ -305,19 +267,30 @@ bool pump() {
       }
 
       int32_t val = (int32_t)filtered;
-      if (val > 32767)
+      bool clipped = false;
+      if (val > 32767) {
         val = 32767;
-      if (val < -32768)
+        clipped = true;
+      }
+      if (val < -32768) {
         val = -32768;
+        clipped = true;
+      }
 
       int16_t converted = (int16_t)val;
       dest16[samplesWritten] = converted;
       samplesWritten++;
 
-      if (converted < peakMin)
-        peakMin = converted;
-      if (converted > peakMax)
-        peakMax = converted;
+      if (converted < peakMin) peakMin = converted;
+      if (converted > peakMax) peakMax = converted;
+
+      // Diagnostics update
+      if (clipped) s_numClippedSamples++;
+      if (converted == 0) s_numZeroSamples++;
+      int16_t absConverted = (converted < 0) ? -converted : converted;
+      if (absConverted > s_peakAmplitude) s_peakAmplitude = absConverted;
+      s_sumSquares += ((double)converted * (double)converted);
+      s_totalSamplesProcessed++;
     }
 
     // Print peak values every ~10 chunks
@@ -424,40 +397,48 @@ const uint8_t *finalizeWav(size_t &outSize) {
     s_pcmBytesWritten -= (trimSamples * 2);
   }
 
-  // Reject clips that can't possibly be real speech, before they ever
-  // reach the network. Whisper will happily "hallucinate" plausible text
-  // (e.g. "Thank you.") from a near-silent or fraction-of-a-second clip
-  // rather than say nothing - so we filter those out here instead of
-  // relying on the model to know better.
+  // Print comprehensive diagnostics for this recording
+  double rms = 0.0;
+  if (s_totalSamplesProcessed > 0) {
+    rms = sqrt(s_sumSquares / s_totalSamplesProcessed);
+  }
+  float clipPercent = (s_totalSamplesProcessed > 0) ? ((float)s_numClippedSamples / s_totalSamplesProcessed) * 100.0f : 0.0f;
+  float zeroPercent = (s_totalSamplesProcessed > 0) ? ((float)s_numZeroSamples / s_totalSamplesProcessed) * 100.0f : 0.0f;
+
+  Serial.println(F("\n=== [Audio Diagnostics] ==="));
+  Serial.printf("Duration:      %lu ms\n", getElapsedMs());
+  Serial.printf("WAV Size:      %zu bytes\n", s_pcmBytesWritten + WAV_HEADER_SIZE_BYTES);
+  Serial.printf("Peak Amp:      %d / 32768\n", s_peakAmplitude);
+  Serial.printf("RMS Level:     %.2f\n", rms);
+  Serial.printf("Clipped:       %lu samples (%.2f%%)\n", (unsigned long)s_numClippedSamples, clipPercent);
+  Serial.printf("Absolute Zero: %lu samples (%.2f%%)\n", (unsigned long)s_numZeroSamples, zeroPercent);
+  Serial.println(F("===========================\n"));
+
+  // Reject clips that can't possibly be real speech
   const size_t MIN_SPEECH_BYTES =
-      (AUDIO_SAMPLE_RATE_HZ * (AUDIO_BITS_PER_SAMPLE / 8) * 400) /
-      1000; // 400ms
-  const int16_t MIN_SPEECH_PEAK =
-      500; // below this, the clip is essentially silence/noise-floor
+      (AUDIO_SAMPLE_RATE_HZ * (AUDIO_BITS_PER_SAMPLE / 8) * 400) / 1000; // 400ms
+  const int16_t MIN_SPEECH_PEAK = 500; // below this, the clip is essentially silence/noise-floor
+  const double MIN_RMS = 50.0; // Needs to have some energy
 
   if (s_pcmBytesWritten < MIN_SPEECH_BYTES) {
-    Serial.printf("[Audio] Rejecting clip: too short (%u bytes, need %u)\n",
+    Serial.printf("[Audio Error] Rejecting clip: too short (%u bytes, need %u)\n",
                   (unsigned)s_pcmBytesWritten, (unsigned)MIN_SPEECH_BYTES);
     outSize = 0;
     return nullptr;
   }
+  
+  if (s_peakAmplitude < MIN_SPEECH_PEAK) {
+    Serial.printf("[Audio Error] Rejecting clip: too quiet (peak %d, need %d)\n",
+                  s_peakAmplitude, MIN_SPEECH_PEAK);
+    outSize = 0;
+    return nullptr;
+  }
 
-  {
-    int16_t *pcmSamples = (int16_t *)(s_buffer + WAV_HEADER_SIZE_BYTES);
-    size_t totalSamples = s_pcmBytesWritten / 2;
-    int16_t peak = 0;
-    for (size_t i = 0; i < totalSamples; i++) {
-      int16_t absVal =
-          (pcmSamples[i] < 0) ? (int16_t)(-pcmSamples[i]) : pcmSamples[i];
-      if (absVal > peak)
-        peak = absVal;
-    }
-    if (peak < MIN_SPEECH_PEAK) {
-      Serial.printf("[Audio] Rejecting clip: too quiet (peak %d, need %d)\n",
-                    peak, MIN_SPEECH_PEAK);
-      outSize = 0;
-      return nullptr;
-    }
+  if (rms < MIN_RMS) {
+    Serial.printf("[Audio Error] Rejecting clip: RMS too low (%.2f, need %.2f)\n",
+                  rms, MIN_RMS);
+    outSize = 0;
+    return nullptr;
   }
 
   const uint32_t dataChunkSize = (uint32_t)s_pcmBytesWritten;
