@@ -13,7 +13,7 @@
 
 <br/>
 
-![Fayas AI Hardware](Pic1.jpg)
+![Fayas AI Hardware](/Pic1.jpg)
 
 </div>
 
@@ -181,12 +181,12 @@ All displays are animated at up to 60 FPS using `millis()` timing. The HTTPS net
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="https://raw.githubusercontent.com/MohammadFayasKhan/FayasAI/main/Pic2.jpg"
+      <img src="/Pic1.jpg"
            width="100%" alt="Fayas AI Screens"/>
       <p align="center"><b>Visual Screens</b><br/><sup>Breathing Orb, waveform inputs, orbital spinners, and error alerts</sup></p>
     </td>
     <td align="center" width="50%">
-      <img src="https://raw.githubusercontent.com/MohammadFayasKhan/FayasAI/main/Pic3.jpg"
+      <img src="/Pic1.jpg"
            width="100%" alt="Fayas AI Hardware"/>
       <p align="center"><b>Hardware Prototype</b><br/><sup>ESP32 DevKit + INMP441 Mic + SSD1306 OLED on breadboard</sup></p>
     </td>
