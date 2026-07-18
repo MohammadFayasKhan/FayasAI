@@ -34,10 +34,37 @@ void startRecording();
  *        the recording buffer. Must be called frequently (every loop()
  *        iteration) while recording is active so animations stay smooth
  *        instead of blocking on a single long i2s_read() call.
- * @return true if the buffer is now full (AUDIO_MAX_RECORD_SECONDS reached),
- *         signalling the caller should stop recording automatically.
+ *
+ *        While pumping, this also runs a lightweight energy-based Voice
+ *        Activity Detector (VAD): once speech has been detected, a long
+ *        enough run of trailing silence auto-ends the turn. The very first
+ *        AUDIO_WARMUP_MS of samples are discarded (mic power-on transient).
+ *
+ * @return true if recording should stop automatically — either the hard
+ *         capacity cap was reached OR the VAD detected end-of-speech. The
+ *         caller reacts identically to a button release in both cases.
  */
 bool pump();
+
+/**
+ * @brief Whether the VAD has detected the start of speech in the current
+ *        recording yet. Useful for the UI (e.g. "listening..." vs "speak
+ *        now") and for deciding whether a clip is worth sending.
+ */
+bool speechDetected();
+
+/**
+ * @brief Reason the most recent recording ended, for logging/UX.
+ */
+enum class StopReason : uint8_t {
+  NONE,          // still recording / not yet stopped
+  BUTTON,        // user released the push-to-talk button
+  VAD_SILENCE,   // VAD detected end of speech
+  BUFFER_FULL    // hard capacity cap reached
+};
+
+/// The reason the last recording stopped.
+StopReason lastStopReason();
 
 /**
  * @brief Stop the current recording session. Call when the button is

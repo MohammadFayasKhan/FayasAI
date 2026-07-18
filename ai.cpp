@@ -13,6 +13,7 @@
 #include <esp_heap_caps.h>
 #include "config.h"
 #include "fayaswifi.h"
+#include "conversation.h"
 
 namespace FayasAI {
 
@@ -38,10 +39,12 @@ static bool readHttpStatusAndHeaders(WiFiClientSecure &client, int &outStatusCod
                                       unsigned long timeoutMs, ProgressCallback onProgress);
 
 AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
-                      String &outResponse, unsigned long &outLatencyMs,
+                      String &outResponse, String &outTranscript,
+                      unsigned long &outLatencyMs,
                       ProgressCallback onProgress) {
     unsigned long startMs = millis();
     outLatencyMs = 0;
+    outTranscript = "";
 
     if (WiFi.status() != WL_CONNECTED) {
         return AIResult::ERR_WIFI_DISCONNECTED;
@@ -273,6 +276,7 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
 
         // Copy content before whisperDoc and client go out of scope
         transcribedTextStr = String(transcribedText);
+        outTranscript = transcribedTextStr; // hand the user's words back to the caller
     } // Whisper client is destroyed here, reclaiming ~40KB SSL heap buffers
 
     // Yield execution and let the ESP32 heap defragment
@@ -299,14 +303,43 @@ AIResult sendAudio(const uint8_t *wavData, size_t wavSize,
     // Build Chat JSON Payload
     JsonDocument chatPayload;
     chatPayload["model"] = GROQ_LLM_MODEL;
-    chatPayload["max_tokens"] = 80; // Limit output size to prevent long generations and save time
-    
+    // Ceiling on generated tokens. Raised from the old 80 (which truncated
+    // multi-sentence replies mid-word); the system prompt still steers toward
+    // short answers, so this only prevents genuine cut-offs.
+    chatPayload["max_tokens"] = AI_MAX_RESPONSE_TOKENS;
+
     JsonArray messages = chatPayload["messages"].to<JsonArray>();
-    
+
     JsonObject sysMsg = messages.add<JsonObject>();
     sysMsg["role"] = "system";
     sysMsg["content"] = AI_SYSTEM_PROMPT;
-    
+
+#if CONV_MEMORY_ENABLED
+    // Replay recent turns (oldest first) so the model has conversational
+    // context for follow-up questions. Each turn contributes a user message
+    // and the assistant reply that followed it. The current utterance is
+    // appended last as the live user message.
+    size_t priorTurns = FayasConversation::count();
+    for (size_t i = 0; i < priorTurns; i++) {
+        FayasConversation::Turn t;
+        if (!FayasConversation::getTurn(i, t)) {
+            continue;
+        }
+        if (t.user.length() > 0) {
+            JsonObject hu = messages.add<JsonObject>();
+            hu["role"] = "user";
+            hu["content"] = t.user;
+        }
+        if (t.assistant.length() > 0) {
+            JsonObject ha = messages.add<JsonObject>();
+            ha["role"] = "assistant";
+            ha["content"] = t.assistant;
+        }
+    }
+    Serial.printf("[Groq Chat] Replaying %u prior turn(s) as context\n",
+                  (unsigned)priorTurns);
+#endif
+
     JsonObject userMsg = messages.add<JsonObject>();
     userMsg["role"] = "user";
     userMsg["content"] = transcribedTextStr;

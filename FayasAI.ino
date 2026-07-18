@@ -21,6 +21,7 @@
 #include "animations.h"
 #include "audio.h"
 #include "config.h"
+#include "conversation.h"
 #include "display.h"
 #include "fayaswifi.h"
 #include "utils.h"
@@ -34,6 +35,10 @@ static DebouncedButton g_button(BUTTON_PIN, BUTTON_ACTIVE_LOW,
                                 BUTTON_DEBOUNCE_MS);
 static NonBlockingTimer g_frameTimer(FRAME_INTERVAL_MS);
 static bool g_debugMode = DEBUG_MODE_DEFAULT;
+// Set false each time recording starts so the listening screen is drawn once
+// on entry; the animation is otherwise suppressed during capture to avoid
+// starving the I2S DMA consumer loop (see handleListening).
+static bool g_listenScreenDrawn = false;
 
 // Cached values refreshed periodically rather than every frame, since
 // WiFi.RSSI()/status() calls are relatively expensive to call at 60Hz.
@@ -137,6 +142,10 @@ void setup() {
   Serial.println(F("[Boot] Audio: OK"));
   Serial.printf("[Boot] Free heap after audio: %d bytes\n", ESP.getFreeHeap());
 
+  // --- Conversation memory ---
+  FayasConversation::begin();
+  Serial.println(F("[Boot] Conversation memory ready"));
+
   // --- WiFi ---
   Serial.printf("[Boot] Connecting to WiFi: %s ...\n", FayasWiFi::getSSID().c_str());
   if (!FayasWiFi::connect()) {
@@ -188,31 +197,56 @@ static void handleHome(bool frameDue) {
       transitionTo(AppState::ERROR_STATE);
       return;
     }
+    // Drop stale conversation context so a brand-new session doesn't inherit
+    // unrelated history from a chat the user had a while ago.
+    if (FayasConversation::expireIfStale()) {
+      Serial.println(F("[Home] Conversation history expired (session idle)"));
+    }
+
     Serial.println(F("[Listen] Starting recording..."));
     FayasAudio::startRecording();
+    g_listenScreenDrawn = false; // redraw listening screen once on entry
     transitionTo(AppState::LISTENING);
   }
 }
 
 static void handleListening(bool frameDue) {
-  // Pump the I2S DMA buffer into RAM every loop iteration so recording
-  // never stalls waiting for a big blocking read, keeping this screen's
-  // animation smooth for the whole press-and-hold duration.
+  // Animation is SUPPRESSED during capture. RAW-word diagnostics proved the
+  // intermittent zero chunks come from I2S DMA starvation: a full SSD1306 I2C
+  // blit blocks the CPU ~20-35 ms, longer than a DMA read interval, so the ring
+  // overflows with zero frames during the blit. With the animation off, pump()
+  // runs unobstructed every loop iteration and zeroHeavy stayed 0 across 78k+
+  // reads with accurate transcription. We render the listening screen ONCE on
+  // entry (via g_listenScreenDrawn, reset at startRecording) and otherwise
+  // leave the display alone until recording ends.
   bool bufferFull = FayasAudio::pump();
   unsigned long elapsed = FayasAudio::getElapsedMs();
 
-  if (frameDue) {
+  if (!g_listenScreenDrawn) {
     FayasAnimations::renderListening(elapsed);
+    g_listenScreenDrawn = true;
   }
+  (void)frameDue; // animation intentionally suppressed during capture
 
-  if (g_button.wasReleased() || bufferFull) {
-    FayasAudio::stopRecording();
+  bool buttonReleased = g_button.wasReleased();
+  if (buttonReleased || bufferFull) {
+    // bufferFull already stopped recording inside pump() and set the stop
+    // reason; a button release stops it here.
+    if (buttonReleased && !bufferFull) {
+      FayasAudio::stopRecording();
+    }
     size_t recordedBytes = FayasAudio::getRecordedByteCount();
 
-    if (bufferFull) {
+    switch (FayasAudio::lastStopReason()) {
+    case FayasAudio::StopReason::VAD_SILENCE:
+      Serial.println(F("[Listen] Auto-stopped: end of speech detected (VAD)"));
+      break;
+    case FayasAudio::StopReason::BUFFER_FULL:
       Serial.println(F("[Listen] Buffer full (max recording reached)"));
-    } else {
+      break;
+    default:
       Serial.println(F("[Listen] >>> BUTTON RELEASED <<<"));
+      break;
     }
     Serial.printf("[Listen] Recorded %u bytes (%.1f KB)\n", recordedBytes,
                   recordedBytes / 1024.0f);
@@ -267,9 +301,30 @@ static void handleThinking() {
                 ESP.getMaxAllocHeap());
 
   String responseText;
+  String transcript;
   unsigned long latencyMs = 0;
-  FayasAI::AIResult result = FayasAI::sendAudio(wavData, wavSize, responseText,
-                                                latencyMs, onAIProgress);
+
+  // Retry transient failures (connect/timeout) a bounded number of times
+  // before surfacing an error, so a single dropped packet or momentary
+  // hiccup doesn't send the user straight to the error screen. Note the WAV
+  // buffer is freed inside sendAudio() after the first upload attempt, so a
+  // retry can only happen for failures that occur BEFORE the body is sent
+  // (connect failures). Post-upload failures fall through to the error path,
+  // which matches the buffer's lifetime.
+  FayasAI::AIResult result = FayasAI::AIResult::ERR_CONNECT_FAILED;
+  for (uint8_t attempt = 0; attempt <= AI_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      Serial.printf("[Think] Retry attempt %u/%u...\n", attempt, AI_MAX_RETRIES);
+    }
+    result = FayasAI::sendAudio(wavData, wavSize, responseText, transcript,
+                                latencyMs, onAIProgress);
+    // Only retry connection failures — the one class of error where a fresh
+    // attempt is both safe (buffer still valid) and likely to help.
+    if (result == FayasAI::AIResult::OK ||
+        result != FayasAI::AIResult::ERR_CONNECT_FAILED) {
+      break;
+    }
+  }
 
   // Safety net: sendAudio() already frees the buffer after the WAV upload
   // body is sent, but call releaseBuffer() here too in case an early
@@ -290,6 +345,13 @@ static void handleThinking() {
   Serial.println("--------------------");
   Serial.println(responseText);
   Serial.println("--------------------");
+
+  // Record this exchange so the next question has conversational context.
+  if (transcript.length() > 0) {
+    FayasConversation::addTurn(transcript, responseText);
+    Serial.printf("[Think] Stored turn. History now holds %u exchange(s)\n",
+                  (unsigned)FayasConversation::count());
+  }
 
   g_lastResponseText = responseText;
   transitionTo(AppState::RESPONSE);
